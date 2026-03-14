@@ -538,6 +538,13 @@ DQ
                 <menuItem title="Go" id="7Mz-pE-ca5">
                     <menu key="submenu" title="Go" id="01c-vh-In9">
                         <items>
+                            <menuItem title="Go To" tag="14265" keyEquivalent="p" id="NCg-FM-got">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES"/>
+                                <connections>
+                                    <action selector="onShowGoToPalette:" target="-1" id="NCg-FM-con"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="NCg-FM-sep"/>
                             <menuItem title="Left Panel..." tag="14260" keyEquivalent="" id="Zbs-zW-mQV">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
@@ -708,7 +715,8 @@ DQ
                                 </menu>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="wKr-Tq-RoM"/>
-                            <menuItem title="Go To Folder..." tag="14110" keyEquivalent="G" id="r9P-3y-Fqa">
+                            <menuItem title="Go To Folder..." tag="14110" keyEquivalent="g" id="r9P-3y-Fqa">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES" shift="YES"/>
                                 <connections>
                                     <action selector="OnGoToFolder:" target="-1" id="O9K-29-SEO"/>
                                 </connections>

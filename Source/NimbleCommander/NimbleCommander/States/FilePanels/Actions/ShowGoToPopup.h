@@ -3,11 +3,14 @@
 
 #include "DefaultAction.h"
 
+#include <any>
 #include <vector>
 
 @class GoToPopupListActionMediator;
 @class NCCommandPopover;
 @class NCCommandPopoverItem;
+@class MainWindowFilePanelState;
+@class PanelController;
 
 namespace nc::config {
 class Config;
@@ -109,5 +112,17 @@ struct ShowTagsQuickList final : PanelAction, private GoToPopupsBase {
 private:
     const nc::config::Config &m_Config;
 };
+
+/** Call from Go To palette when user selects an entry. */
+void PerformGoToWithContext(MainWindowFilePanelState *_state,
+                            PanelController *_panel,
+                            nc::panel::NetworkConnectionsManager &_net_mgr,
+                            const std::any &_context);
+
+/** Go to a native path. */
+void PerformGoToWithPath(MainWindowFilePanelState *_state,
+                         PanelController *_panel,
+                         nc::panel::NetworkConnectionsManager &_net_mgr,
+                         const std::string &_path);
 
 } // namespace nc::panel::actions

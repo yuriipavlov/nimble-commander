@@ -161,7 +161,7 @@ static GoToPopupListActionMediator *g_CurrentMediator = nil;
 
 - (void)handleTag:(const nc::utility::Tags::Tag &)_tag
 {
-    // The Spotlight query is done in a background in the panel's loading queue
+    // Path-based go-to (e.g. from palette extra search) runs on panel's loading queue
     auto task = [tag = _tag, fetch_flags = m_Panel.vfsFetchingFlags, panel = m_Panel](
                     const std::function<bool()> &_is_cancelled) {
         auto items = nc::utility::Tags::GatherAllItemsWithTag(tag.Label());
@@ -206,6 +206,23 @@ static GoToPopupListActionMediator *g_CurrentMediator = nil;
 @end
 
 namespace nc::panel::actions {
+
+void PerformGoToWithContext(MainWindowFilePanelState *_state,
+                            PanelController *_panel,
+                            NetworkConnectionsManager &_net_mgr,
+                            const std::any &_context)
+{
+    auto mediator = [[GoToPopupListActionMediator alloc] initWithState:_state andPanel:_panel networkMgr:_net_mgr];
+    [mediator performGoTo:_context sender:nil];
+}
+
+void PerformGoToWithPath(MainWindowFilePanelState *_state,
+                         PanelController *_panel,
+                         NetworkConnectionsManager &_net_mgr,
+                         const std::string &_path)
+{
+    PerformGoToWithContext(_state, _panel, _net_mgr, std::any{_path});
+}
 
 static NSString *ShrinkMenuItemTitle(NSString *_title);
 

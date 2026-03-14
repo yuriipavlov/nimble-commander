@@ -83,6 +83,35 @@ static std::vector<std::string> FetchSpotlightResults(const std::string &_query)
     return result;
 }
 
+// Folders-only query for Go To palette fallback.
+static const char *g_SpotlightFoldersFormat = "kMDItemFSName == '*#{query}*'cd && kMDItemContentType == 'public.folder'";
+
+std::vector<std::string> SpotlightSearchFolders(const std::string &_query)
+{
+    if( _query.empty() )
+        return {};
+    const std::string format = CookSpotlightSearchQuery(g_SpotlightFoldersFormat, _query);
+    MDQueryRef query =
+        MDQueryCreate(nullptr, static_cast<CFStringRef>([NSString stringWithUTF8StdString:format]), nullptr, nullptr);
+    if( !query )
+        return {};
+    auto clear_query = at_scope_end([=] { CFRelease(query); });
+    const int max_count = std::min(GlobalConfig().GetInt(g_ConfigSpotlightMaxCount), 64);
+    MDQuerySetMaxCount(query, max_count);
+    if( !MDQueryExecute(query, kMDQuerySynchronous) )
+        return {};
+    std::vector<std::string> result;
+    for( long i = 0, e = MDQueryGetResultCount(query); i < e; ++i ) {
+        MDItemRef item = static_cast<MDItemRef>(const_cast<void *>(MDQueryGetResultAtIndex(query, i)));
+        CFStringRef item_path = static_cast<CFStringRef>(MDItemCopyAttribute(item, kMDItemPath));
+        auto clear_item_path = at_scope_end([=] { CFRelease(item_path); });
+        result.emplace_back(base::CFStringGetUTF8StdString(item_path));
+    }
+    std::ranges::sort(result);
+    result.erase(std::ranges::unique(result).begin(), result.end());
+    return result;
+}
+
 static VFSListingPtr FetchSearchResultsAsListing(const std::vector<std::string> &_file_paths,
                                                  VFSHost &_vfs,
                                                  unsigned long _fetch_flags,

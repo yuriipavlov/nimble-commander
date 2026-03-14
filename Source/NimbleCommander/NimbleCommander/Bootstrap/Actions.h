@@ -99,6 +99,7 @@ static constexpr std::pair<const char*,int> g_ActionsTags[] = {
     {"menu.go.enclosing_folder",                        14'020},
     {"menu.go.into_folder",                             14'030},
     {"menu.go.follow_symlink",                          14'300},
+    {"menu.go.goto_palette",                            14'265},
     {"menu.go.left_panel",                              14'260},
     {"menu.go.right_panel",                             14'270},
     {"menu.go.documents",                               14'040},
@@ -319,6 +320,7 @@ static constinit std::pair<const char*, const char*> g_DefaultActionShortcuts[] 
     {"menu.go.utilities",                                   "⇧⌘u"     }, // shift+cmd+u
     {"menu.go.processes_list",                              "⌥⌘p"     }, // alt+cmd+p
     {"menu.go.favorites.manage",                            "^⌘b"     }, // ctrl+cmd+b
+    {"menu.go.goto_palette",                               "⌘p"      }, // cmd+p (Go To palette)
     {"menu.go.to_folder",                                   "⇧⌘g"     }, // shift+cmd+g
     {"menu.go.restore_last_closed",                         "⇧⌘r"     }, // shift+cmd+R
     {"menu.go.connect.ftp",                                 ""        },

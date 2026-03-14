@@ -36,6 +36,7 @@ using StateActionsMap = ankerl::unordered_dense::map<SEL, std::unique_ptr<const 
 - (IBAction)onFileCloseOtherTabs:(id)sender;
 - (IBAction)OnFileNewTab:(id)sender;
 - (IBAction)onSwitchDualSinglePaneMode:(id)sender;
+- (IBAction)onShowGoToPalette:(id)sender;
 - (IBAction)onLeftPanelGoToButtonAction:(id)sender;
 - (IBAction)onRightPanelGoToButtonAction:(id)sender;
 - (IBAction)OnWindowShowPreviousTab:(id)sender;

@@ -2,6 +2,7 @@
 #include "StateActions.h"
 #include "Actions/TabsManagement.h"
 #include "Actions/ShowGoToPopup.h"
+#include "Actions/GoToPalette.h"
 #include "Actions/ToggleSingleOrDualMode.h"
 #include "Actions/ShowTabs.h"
 #include "Actions/CopyFile.h"
@@ -31,6 +32,7 @@ StateActionsMap BuildStateActionsMap(nc::config::Config &_global_config,
     add(@selector(performClose:), new CloseTab);
     add(@selector(onFileCloseOtherTabs:), new CloseOtherTabs);
     add(@selector(OnFileCloseWindow:), new CloseWindow);
+    add(@selector(onShowGoToPalette:), new ShowGoToPalette{_net_mgr});
     add(@selector(onLeftPanelGoToButtonAction:), new ShowLeftGoToPopup{_net_mgr, _native_fs_manager, _tags_storage});
     add(@selector(onRightPanelGoToButtonAction:), new ShowRightGoToPopup{_net_mgr, _native_fs_manager, _tags_storage});
     add(@selector(onSwitchDualSinglePaneMode:), new ToggleSingleOrDualMode);
