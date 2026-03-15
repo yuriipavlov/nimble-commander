@@ -63,7 +63,7 @@ static bool IsFolderHidden(const std::filesystem::path &_p)
 }
 
 // Budget: target ~2-3 sec index build. 70% HOME / 30% volumes. Fair split per level, BFS.
-static const int kFolderSearchBudget = 2500;
+static const int kFolderSearchBudget = 3200;
 
 // macOS TCC-protected subfolders under HOME (Documents, Desktop, etc.). Accessing them triggers
 // a permission dialog when Full Disk Access is not granted. Check FDA once, then skip these if needed.
@@ -216,12 +216,12 @@ static std::vector<std::string> BuildFolderIndexWithBudget(const std::vector<std
     return index;
 }
 
-// Filter index by folder name only (last path component). Case-insensitive substring. No duplicates. Max 128.
+// Filter index by folder name only (last path component). Case-insensitive substring. No duplicates. Max 192.
 static std::vector<std::string> FilterIndexByFolderName(const std::vector<std::string> &_index,
                                                         const std::string &_needle)
 {
     namespace fs = std::filesystem;
-    static const std::size_t kMaxResults = 128;
+    static const std::size_t kMaxResults = 192;
     std::vector<std::string> result;
     result.reserve(std::min(kMaxResults, _index.size()));
     std::unordered_set<std::string> unique;

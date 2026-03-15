@@ -21,6 +21,33 @@ static const CGFloat kPadding = 8.;
 @synthesize context;
 @end
 
+// Panel subclass that keeps key events from bubbling to the parent (child window best practice).
+// Overriding nextResponder to nil stops the responder chain; performKeyEquivalent handles Enter/Esc.
+@interface GoToPalettePanel : NSPanel
+@end
+
+@implementation GoToPalettePanel
+- (NSResponder *)nextResponder
+{
+    return nil; // Don't pass unhandled events to parent window.
+}
+
+- (BOOL)performKeyEquivalent:(NSEvent *)event
+{
+    if( event.keyCode == 53 ) { // Esc
+        [self close];
+        return YES;
+    }
+    if( event.keyCode == 36 ) { // Enter (Return)
+        id d = self.delegate;
+        if( [d respondsToSelector:@selector(performGoToForSelectedRow)] )
+            [d performSelector:@selector(performGoToForSelectedRow)];
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
+@end
+
 @interface GoToPaletteWindowController () <NSWindowDelegate>
 @property(nonatomic, weak) PanelController *panel;
 @property(nonatomic, weak) MainWindowFilePanelState *state;
@@ -30,7 +57,6 @@ static const CGFloat kPadding = 8.;
 @property(nonatomic, strong) NSSearchField *searchField;
 @property(nonatomic, strong) NSTableView *tableView;
 @property(nonatomic, strong) NSScrollView *scrollView;
-@property(nonatomic, strong) id eventMonitor;
 @property(nonatomic, strong) id textChangeObserver;
 @property(nonatomic, copy) GoToPaletteSearchBlock searchBlock;
 @property(nonatomic, copy) NSArray<NSString *> *extraPathResults;
@@ -48,7 +74,6 @@ static const CGFloat kPadding = 8.;
 @synthesize searchField = _searchField;
 @synthesize tableView = _tableView;
 @synthesize scrollView = _scrollView;
-@synthesize eventMonitor = _eventMonitor;
 @synthesize textChangeObserver = _textChangeObserver;
 @synthesize searchBlock = _searchBlock;
 @synthesize extraPathResults = _extraPathResults;
@@ -103,6 +128,35 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     if( [displayString rangeOfString:@"/"].location != NSNotFound )
         return displayString.lastPathComponent;
     return displayString;
+}
+
+static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, NSString *query)
+{
+    if( !text )
+        return [[NSAttributedString alloc] initWithString:@""];
+    NSFont *baseFont = [NSFont systemFontOfSize:12];
+    if( !query || query.length == 0 ) {
+        return [[NSAttributedString alloc] initWithString:text attributes:@{ NSFontAttributeName: baseFont }];
+    }
+
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithString:text
+                                                                               attributes:@{ NSFontAttributeName: baseFont }];
+    NSDictionary *highlightAttrs = @{
+        NSBackgroundColorAttributeName: [NSColor.selectedTextBackgroundColor colorWithAlphaComponent:0.6],
+        NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
+    };
+    NSString *lowerText = text.lowercaseString;
+    NSString *lowerQuery = query.lowercaseString;
+    NSRange searchRange = NSMakeRange(0, lowerText.length);
+    for( ;; ) {
+        NSRange match = [lowerText rangeOfString:lowerQuery options:0 range:searchRange];
+        if( match.location == NSNotFound )
+            break;
+        [result setAttributes:highlightAttrs range:match];
+        searchRange.location = match.location + match.length;
+        searchRange.length = lowerText.length - searchRange.location;
+    }
+    return [result copy];
 }
 
 - (void)filterWithQuery:(NSString *)query
@@ -196,10 +250,10 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
 - (void)buildWindow
 {
     NSRect contentRect = NSMakeRect(0, 0, kWindowWidth, kSearchHeight + kPadding * 2 + kTableRowHeight * kMaxVisibleRows);
-    NSPanel *floatingPanel = [[NSPanel alloc] initWithContentRect:contentRect
-                                                                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                                                                    backing:NSBackingStoreBuffered
-                                                                      defer:NO];
+    GoToPalettePanel *floatingPanel = [[GoToPalettePanel alloc] initWithContentRect:contentRect
+                                                                           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                                                             backing:NSBackingStoreBuffered
+                                                                               defer:NO];
     floatingPanel.title = @"GoTo";
     floatingPanel.level = NSFloatingWindowLevel;
     floatingPanel.becomesKeyOnlyIfNeeded = NO;
@@ -262,21 +316,6 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     CGFloat y = parentFrame.origin.y + parentFrame.size.height - winFrame.size.height - 60.;
     [win setFrameOrigin:NSMakePoint(x, y)];
     [parentWindow addChildWindow:win ordered:NSWindowAbove];
-    __weak __typeof__(self) wself = self;
-    self.eventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventTypeKeyDown
-                                                              handler:^NSEvent *(NSEvent *ev) {
-                                                                  if( ev.window != wself.window )
-                                                                      return ev;
-                                                                  if( ev.keyCode == 53 ) { // Esc
-                                                                      [wself.window close];
-                                                                      return nil;
-                                                                  }
-                                                                  if( ev.keyCode == 36 ) { // Enter
-                                                                      [wself performGoToForSelectedRow];
-                                                                      return nil;
-                                                                  }
-                                                                  return ev;
-                                                              }];
     [win makeKeyAndOrderFront:nil];
     [self.searchField becomeFirstResponder];
     [self filterWithQuery:self.searchField.stringValue];
@@ -374,7 +413,7 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
         [cell addSubview:textField];
         cell.textField = textField;
     }
-    cell.textField.stringValue = display ?: @"";
+    cell.textField.attributedStringValue = AttributedStringWithHighlightedQuery(display ?: @"", self.lastAppliedQuery);
     return cell;
 }
 
@@ -385,10 +424,6 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     if( self.textChangeObserver ) {
         [[NSNotificationCenter defaultCenter] removeObserver:self.textChangeObserver];
         self.textChangeObserver = nil;
-    }
-    if( self.eventMonitor ) {
-        [NSEvent removeMonitor:self.eventMonitor];
-        self.eventMonitor = nil;
     }
     NSWindow *win = self.window;
     if( win.parentWindow )

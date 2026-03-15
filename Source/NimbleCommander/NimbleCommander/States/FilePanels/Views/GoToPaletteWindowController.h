@@ -24,4 +24,6 @@ typedef void (^GoToPaletteSearchBlock)(NSString *query, void (^completion)(NSArr
 - (void)showRelativeToWindow:(NSWindow *)parentWindow;
 /** Re-run search with current query (e.g. after index has finished building). */
 - (void)refilterCurrentQuery;
+/** Navigate to the currently selected row (called from panel's performKeyEquivalent for Enter). */
+- (void)performGoToForSelectedRow;
 @end

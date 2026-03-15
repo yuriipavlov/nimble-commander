@@ -45,7 +45,6 @@ struct MainWindowFilePanelState_OverlappedTerminalSupport;
     std::vector<PanelController *> m_LeftPanelControllers;
     std::vector<PanelController *> m_RightPanelControllers;
     __weak PanelController *m_LastFocusedPanelController;
-
     AttachedResponder *m_AttachedResponder;
 
     FilePanelMainSplitView *m_SplitView;
