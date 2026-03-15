@@ -22,4 +22,6 @@ typedef void (^GoToPaletteSearchBlock)(NSString *query, void (^completion)(NSArr
                       entries:(NSArray<GoToPaletteEntry *> *)entries
                    searchBlock:(GoToPaletteSearchBlock)searchBlock;
 - (void)showRelativeToWindow:(NSWindow *)parentWindow;
+/** Re-run search with current query (e.g. after index has finished building). */
+- (void)refilterCurrentQuery;
 @end

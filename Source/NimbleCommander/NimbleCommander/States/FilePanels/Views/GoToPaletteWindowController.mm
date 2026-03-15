@@ -94,20 +94,24 @@ static void GoToPaletteLog(NSString *fmt, ...)
     return self;
 }
 
-static bool FuzzyMatch(NSString *query, NSString *candidate)
+static bool QueryMatches(NSString *query, NSString *candidate)
 {
     if( query.length == 0 )
         return true;
     std::string q = query.lowercaseString.UTF8String ?: "";
     std::string c = candidate.lowercaseString.UTF8String ?: "";
-    size_t pos = 0;
-    for( char ch : q ) {
-        pos = c.find(ch, pos);
-        if( pos == std::string::npos )
-            return false;
-        ++pos;
-    }
-    return true;
+    return c.find(q) != std::string::npos;
+}
+
+// Use folder name (last path component) for matching when candidate looks like a path,
+// so "va" matches "Valerii" but not "LeadsMarket" (path contains "yuriipavlov").
+static NSString *DisplayStringForFiltering(NSString *displayString)
+{
+    if( !displayString || displayString.length == 0 )
+        return displayString;
+    if( [displayString rangeOfString:@"/"].location != NSNotFound )
+        return displayString.lastPathComponent;
+    return displayString;
 }
 
 - (void)filterWithQuery:(NSString *)query
@@ -126,14 +130,16 @@ static bool FuzzyMatch(NSString *query, NSString *candidate)
     } else {
         NSMutableArray<GoToPaletteEntry *> *filtered = [NSMutableArray array];
         for( GoToPaletteEntry *e in self.allEntries ) {
-            if( FuzzyMatch(query, e.displayString) )
+            NSString *toMatch = DisplayStringForFiltering(e.displayString);
+            if( QueryMatches(query, toMatch) )
                 [filtered addObject:e];
         }
         self.filteredEntries = [filtered copy];
         self.extraPathResults = @[];
         GoToPaletteLog(@"  filtered from history: %lu", static_cast<unsigned long>(self.filteredEntries.count));
-        // Only ask external search when nothing was found in history/frecents/favorites.
-        if( self.searchBlock && self.filteredEntries.count == 0 ) {
+        // Always ask external search for non-empty queries so filesystem results are visible
+        // even when there are some matches in history/frecents/favorites.
+        if( self.searchBlock ) {
             NSInteger gen = ++_searchGeneration;
             __weak __typeof__(self) wself = self;
             GoToPaletteLog(@"  calling search block gen=%ld", static_cast<long>(gen));
@@ -142,9 +148,16 @@ static bool FuzzyMatch(NSString *query, NSString *candidate)
                             static_cast<unsigned long>(paths ? paths.count : 0),
                             (__bridge void *)wself, static_cast<long>(gen),
                             wself ? static_cast<long>(wself.searchGeneration) : -1L);
-                if( !wself || gen != wself.searchGeneration )
+                if( !wself )
                     return;
+                if( gen != wself.searchGeneration )
+                    GoToPaletteLog(@"  applying stale search results gen=%ld self.gen=%ld",
+                                   static_cast<long>(gen),
+                                   static_cast<long>(wself.searchGeneration));
                 wself.extraPathResults = paths ?: @[];
+                GoToPaletteLog(@"  set extraPathResults=%lu totalRows=%lu",
+                               static_cast<unsigned long>(wself.extraPathResults.count),
+                               static_cast<unsigned long>(wself.filteredEntries.count + wself.extraPathResults.count));
                 [wself.tableView reloadData];
                 if( wself.filteredEntries.count + wself.extraPathResults.count > 0 )
                     [wself.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
@@ -170,6 +183,12 @@ static bool FuzzyMatch(NSString *query, NSString *candidate)
 
 - (void)applyFilterFromSearchFieldTimer:(NSTimer *)timer
 {
+    [self filterWithQuery:self.searchField.stringValue];
+}
+
+- (void)refilterCurrentQuery
+{
+    self.lastAppliedQuery = nil;
     [self filterWithQuery:self.searchField.stringValue];
 }
 
@@ -343,10 +362,13 @@ static bool FuzzyMatch(NSString *query, NSString *candidate)
     if( row < 0 || static_cast<size_t>(row) >= total )
         return nil;
     NSString *display = nil;
-    if( static_cast<size_t>(row) < historyCount )
+    if( static_cast<size_t>(row) < historyCount ) {
         display = self.filteredEntries[row].displayString;
-    else
-        display = self.extraPathResults[row - historyCount];
+    } else {
+        // Mark filesystem search results explicitly so it's clear they are not from history/favorites.
+        NSString *path = self.extraPathResults[row - historyCount];
+        display = [NSString stringWithFormat:@"[FS] %@", path ?: @""];
+    }
     NSTableCellView *cell = [tableView makeViewWithIdentifier:@"PathCell" owner:self];
     if( !cell ) {
         cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, tableColumn.width, kTableRowHeight)];
