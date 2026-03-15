@@ -84,6 +84,16 @@ static bool QueryMatches(NSString *query, NSString *candidate)
     return c.find(q) != std::string::npos;
 }
 
+static NSString *NormalizePathForDedup(NSString *path)
+{
+    if( !path || path.length == 0 )
+        return @"";
+    NSString *s = [path copy];
+    while( s.length > 1 && ( [s hasSuffix:@"/"] || [s hasSuffix:@"\\"] ) )
+        s = [s substringToIndex:s.length - 1];
+    return s.lowercaseString ?: @"";
+}
+
 // Use folder name (last path component) for matching when candidate looks like a path,
 // so "va" matches "Valerii" but not "LeadsMarket" (path contains "yuriipavlov").
 static NSString *DisplayStringForFiltering(NSString *displayString)
@@ -121,7 +131,25 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
             self.searchBlock(query, ^(NSArray<NSString *> *paths) {
                 if( !wself || gen != wself.searchGeneration )
                     return;
-                wself.extraPathResults = paths ?: @[];
+                NSMutableSet<NSString *> *seenNorm = [NSMutableSet set];
+                NSMutableArray<NSString *> *deduped = [NSMutableArray array];
+                for( NSString *path in paths ?: @[] ) {
+                    NSString *norm = NormalizePathForDedup(path);
+                    if( norm.length == 0 || [seenNorm containsObject:norm] )
+                        continue;
+                    BOOL inHistory = NO;
+                    for( GoToPaletteEntry *e in wself.filteredEntries ) {
+                        if( [NormalizePathForDedup(e.displayString) isEqualToString:norm] ) {
+                            inHistory = YES;
+                            break;
+                        }
+                    }
+                    if( inHistory )
+                        continue;
+                    [seenNorm addObject:norm];
+                    [deduped addObject:path];
+                }
+                wself.extraPathResults = [deduped copy];
                 [wself.tableView reloadData];
                 if( wself.filteredEntries.count + wself.extraPathResults.count > 0 )
                     [wself.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
@@ -130,7 +158,6 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     }
     [self.tableView reloadData];
     NSUInteger total = self.filteredEntries.count + self.extraPathResults.count;
-    self.window.title = [NSString stringWithFormat:NSLocalizedString(@"Go To (%lu)", nil), static_cast<unsigned long>(total)];
     if( total > 0 ) {
         [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [self.tableView scrollRowToVisible:0];
@@ -161,14 +188,19 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     self.window.delegate = self;
 }
 
+- (void)windowDidResignKey:(NSNotification *)notification
+{
+    [self.window close];
+}
+
 - (void)buildWindow
 {
     NSRect contentRect = NSMakeRect(0, 0, kWindowWidth, kSearchHeight + kPadding * 2 + kTableRowHeight * kMaxVisibleRows);
     NSPanel *floatingPanel = [[NSPanel alloc] initWithContentRect:contentRect
-                                                         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                                                           backing:NSBackingStoreBuffered
-                                                             defer:NO];
-    floatingPanel.title = NSLocalizedString(@"Go To", @"Go To palette title");
+                                                                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                                                    backing:NSBackingStoreBuffered
+                                                                      defer:NO];
+    floatingPanel.title = @"GoTo";
     floatingPanel.level = NSFloatingWindowLevel;
     floatingPanel.becomesKeyOnlyIfNeeded = NO;
     floatingPanel.hidesOnDeactivate = NO;

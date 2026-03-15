@@ -262,6 +262,13 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
         return;
 
     auto &storage = *NCAppDelegate.me.favoriteLocationsStorage;
+    auto normalizeForKey = [](std::string s) {
+        while( !s.empty() && (s.back() == '/' || s.back() == '\\') )
+            s.pop_back();
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    };
+    std::unordered_set<std::string> seen_paths;
     NSMutableArray<GoToPaletteEntry *> *entries = [NSMutableArray array];
     const auto fmt_opts = static_cast<loc_fmt::Formatter::RenderOptions>(loc_fmt::Formatter::RenderMenuTitle |
                                                                           loc_fmt::Formatter::RenderMenuTooltip);
@@ -269,7 +276,7 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
     // Current directory first (so list is never empty when on native FS)
     if( panel.isUniform ) {
         std::string path = panel.currentDirectoryPath;
-        if( !path.empty() ) {
+        if( !path.empty() && seen_paths.insert(normalizeForKey(path)).second ) {
             GoToPaletteEntry *e = [GoToPaletteEntry new];
             e.displayString = [NSString stringWithUTF8String:path.c_str()];
             e.context = [[AnyHolder alloc] initWithAny:std::any{path}];
@@ -284,14 +291,19 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
         const ListingPromise &promise = history[i].get();
         auto rep = loc_fmt::ListingPromiseFormatter::Render(fmt_opts, promise);
         NSString *title = rep.menu_title ?: @"";
-        GoToPaletteEntry *e = [GoToPaletteEntry new];
-        e.displayString = title;
-        e.context = [[AnyHolder alloc] initWithAny:std::any{promise}];
-        [entries addObject:e];
+        std::string key = title.UTF8String ? normalizeForKey(std::string(title.UTF8String)) : std::string();
+        if( !key.empty() && seen_paths.insert(key).second ) {
+            GoToPaletteEntry *e = [GoToPaletteEntry new];
+            e.displayString = title;
+            e.context = [[AnyHolder alloc] initWithAny:std::any{promise}];
+            [entries addObject:e];
+        }
     }
 
     // Frecently used
     for( auto &loc : storage.FrecentlyUsed(80) ) {
+        if( !seen_paths.insert(normalizeForKey(loc->verbose_path)).second )
+            continue;
         GoToPaletteEntry *e = [GoToPaletteEntry new];
         e.displayString = [NSString stringWithUTF8String:loc->verbose_path.c_str()];
         e.context = [[AnyHolder alloc] initWithAny:std::any{loc}];
@@ -300,6 +312,8 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
 
     // Favorites
     for( const auto &f : storage.Favorites() ) {
+        if( !seen_paths.insert(normalizeForKey(f.location->verbose_path)).second )
+            continue;
         GoToPaletteEntry *e = [GoToPaletteEntry new];
         std::string display = f.title.empty() ? f.location->verbose_path : f.title;
         e.displayString = [NSString stringWithUTF8String:display.c_str()];
