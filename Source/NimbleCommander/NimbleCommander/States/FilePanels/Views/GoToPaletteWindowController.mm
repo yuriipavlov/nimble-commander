@@ -16,25 +16,6 @@ static const CGFloat kTableRowHeight = 22.;
 static const CGFloat kMaxVisibleRows = 14.;
 static const CGFloat kPadding = 8.;
 
-static void GoToPaletteLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
-static void GoToPaletteLog(NSString *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    NSData *data = [[s stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
-    static NSFileHandle *fh;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        [[NSFileManager defaultManager] createFileAtPath:@"/tmp/gotopalette_debug.txt" contents:nil attributes:nil];
-        fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/gotopalette_debug.txt"];
-        [fh seekToEndOfFile];
-    });
-    if( fh )
-        [fh writeData:data];
-}
-
 @implementation GoToPaletteEntry
 @synthesize displayString;
 @synthesize context;
@@ -122,8 +103,6 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
         return;
     self.lastAppliedQuery = [query copy];
 
-    GoToPaletteLog(@"filterWithQuery: '%@' allEntries=%lu", query, static_cast<unsigned long>(self.allEntries.count));
-
     if( query.length == 0 ) {
         self.filteredEntries = [self.allEntries copy];
         self.extraPathResults = @[];
@@ -136,28 +115,13 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
         }
         self.filteredEntries = [filtered copy];
         self.extraPathResults = @[];
-        GoToPaletteLog(@"  filtered from history: %lu", static_cast<unsigned long>(self.filteredEntries.count));
-        // Always ask external search for non-empty queries so filesystem results are visible
-        // even when there are some matches in history/frecents/favorites.
         if( self.searchBlock ) {
             NSInteger gen = ++_searchGeneration;
             __weak __typeof__(self) wself = self;
-            GoToPaletteLog(@"  calling search block gen=%ld", static_cast<long>(gen));
             self.searchBlock(query, ^(NSArray<NSString *> *paths) {
-                GoToPaletteLog(@"  search completion: %lu paths wself=%p gen=%ld self.gen=%ld",
-                            static_cast<unsigned long>(paths ? paths.count : 0),
-                            (__bridge void *)wself, static_cast<long>(gen),
-                            wself ? static_cast<long>(wself.searchGeneration) : -1L);
-                if( !wself )
+                if( !wself || gen != wself.searchGeneration )
                     return;
-                if( gen != wself.searchGeneration )
-                    GoToPaletteLog(@"  applying stale search results gen=%ld self.gen=%ld",
-                                   static_cast<long>(gen),
-                                   static_cast<long>(wself.searchGeneration));
                 wself.extraPathResults = paths ?: @[];
-                GoToPaletteLog(@"  set extraPathResults=%lu totalRows=%lu",
-                               static_cast<unsigned long>(wself.extraPathResults.count),
-                               static_cast<unsigned long>(wself.filteredEntries.count + wself.extraPathResults.count));
                 [wself.tableView reloadData];
                 if( wself.filteredEntries.count + wself.extraPathResults.count > 0 )
                     [wself.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
@@ -166,7 +130,6 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     }
     [self.tableView reloadData];
     NSUInteger total = self.filteredEntries.count + self.extraPathResults.count;
-    GoToPaletteLog(@"  total rows: %lu", static_cast<unsigned long>(total));
     self.window.title = [NSString stringWithFormat:NSLocalizedString(@"Go To (%lu)", nil), static_cast<unsigned long>(total)];
     if( total > 0 ) {
         [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
@@ -365,9 +328,7 @@ static NSString *DisplayStringForFiltering(NSString *displayString)
     if( static_cast<size_t>(row) < historyCount ) {
         display = self.filteredEntries[row].displayString;
     } else {
-        // Mark filesystem search results explicitly so it's clear they are not from history/favorites.
-        NSString *path = self.extraPathResults[row - historyCount];
-        display = [NSString stringWithFormat:@"[FS] %@", path ?: @""];
+        display = self.extraPathResults[row - historyCount];
     }
     NSTableCellView *cell = [tableView makeViewWithIdentifier:@"PathCell" owner:self];
     if( !cell ) {

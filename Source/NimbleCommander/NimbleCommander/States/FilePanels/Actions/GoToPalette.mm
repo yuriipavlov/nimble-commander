@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <unordered_set>
 #include <cerrno>
-#include <cstdio>
 #include <system_error>
 #include <atomic>
 #include <memory>
@@ -29,20 +28,6 @@
 namespace nc::panel::actions {
 
 namespace {
-
-// Debug logging for filesystem search part of Go To palette.
-static void LogGoToPaletteSearch(const char *_fmt, ...)
-{
-    FILE *f = std::fopen("/tmp/gotopalette_debug.txt", "a");
-    if( !f )
-        return;
-    va_list ap;
-    va_start(ap, _fmt);
-    std::vfprintf(f, _fmt, ap);
-    std::fprintf(f, "\n");
-    va_end(ap);
-    std::fclose(f);
-}
 
 // Streaming search: walk a few roots with strict limits and collect matching directories.
 // Case-insensitive substring match (exact: name must contain query).
@@ -228,7 +213,6 @@ static std::vector<std::string> BuildFolderIndexWithBudget(const std::vector<std
         }
     }
 
-    LogGoToPaletteSearch("Index built: %zu paths", index.size());
     return index;
 }
 
@@ -382,15 +366,9 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
             const char *q_utf8 = query_copy.lowercaseString.UTF8String;
             const std::string needle = q_utf8 ? std::string(q_utf8) : std::string();
             try {
-                if( state->ready && !state->paths.empty() ) {
-                    LogGoToPaletteSearch("FS search (index): query='%s'", needle.c_str());
+                if( state->ready && !state->paths.empty() )
                     matches = FilterIndexByFolderName(state->paths, needle);
-                }
-                // While index is building: no FS search, only history/favorites shown.
-            } catch( const std::exception &e ) {
-                LogGoToPaletteSearch("FS search exception: %s", e.what());
             } catch( ... ) {
-                LogGoToPaletteSearch("FS search unknown exception");
             }
 
             NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:matches.size()];
@@ -415,10 +393,7 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
         try {
             index_state->paths = BuildFolderIndexWithBudget(*roots_copy);
             index_state->ready = true;
-        } catch( const std::exception &e ) {
-            LogGoToPaletteSearch("Index build exception: %s", e.what());
         } catch( ... ) {
-            LogGoToPaletteSearch("Index build unknown exception");
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [wc_weak refilterCurrentQuery];
