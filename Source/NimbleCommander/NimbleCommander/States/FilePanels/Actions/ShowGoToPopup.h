@@ -4,6 +4,7 @@
 #include "DefaultAction.h"
 
 #include <any>
+#include <string>
 #include <vector>
 
 @class GoToPopupListActionMediator;
