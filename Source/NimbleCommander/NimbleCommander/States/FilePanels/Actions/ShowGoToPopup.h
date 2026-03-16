@@ -126,4 +126,7 @@ void PerformGoToWithPath(MainWindowFilePanelState *_state,
                          nc::panel::NetworkConnectionsManager &_net_mgr,
                          const std::string &_path);
 
+/** Recent native paths selected via Go To actions (most recent first). */
+std::vector<std::string> RecentGoToPaths();
+
 } // namespace nc::panel::actions

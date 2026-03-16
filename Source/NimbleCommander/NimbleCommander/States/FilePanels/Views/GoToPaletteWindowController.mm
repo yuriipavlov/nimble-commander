@@ -14,6 +14,7 @@ static const CGFloat g_SearchHeight = 28.;
 static const CGFloat g_TableRowHeight = 22.;
 static const CGFloat g_MaxVisibleRows = 14.;
 static const CGFloat g_Padding = 8.;
+static const NSTimeInterval g_SearchDebounceDelay = 0.08;
 
 @implementation GoToPaletteEntry
 @synthesize displayString;
@@ -77,6 +78,7 @@ static const CGFloat g_Padding = 8.;
 @property(nonatomic, copy) NSArray<NSString *> *extraPathResults;
 @property(nonatomic, assign) NSInteger searchGeneration;
 @property(nonatomic, copy) NSString *lastAppliedQuery;
+@property(nonatomic, strong) NSTimer *searchDebounceTimer;
 - (void)performGoToForSelectedRow;
 @end
 
@@ -93,6 +95,7 @@ static const CGFloat g_Padding = 8.;
 @synthesize extraPathResults = _extraPathResults;
 @synthesize searchGeneration = _searchGeneration;
 @synthesize lastAppliedQuery = _lastAppliedQuery;
+@synthesize searchDebounceTimer = _searchDebounceTimer;
 
 - (instancetype)initWithPanel:(PanelController *)panel
                         state:(MainWindowFilePanelState *)state
@@ -245,7 +248,15 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
 
 - (void)controlTextDidChange:(NSNotification *)notification
 {
-    [self filterWithQuery:self.searchField.stringValue];
+    [self.searchDebounceTimer invalidate];
+    __weak __typeof__(self) wself = self;
+    self.searchDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:g_SearchDebounceDelay
+                                                                repeats:NO
+                                                                  block:^(__unused NSTimer *) {
+                                                                      if( !wself )
+                                                                          return;
+                                                                      [wself filterWithQuery:wself.searchField.stringValue];
+                                                                  }];
 }
 
 - (void)refilterCurrentQuery
@@ -414,6 +425,8 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
 
 - (void)windowWillClose:(NSNotification *)notification
 {
+    [self.searchDebounceTimer invalidate];
+    self.searchDebounceTimer = nil;
     NSWindow *win = self.window;
     if( win.parentWindow )
         [win.parentWindow removeChildWindow:win];

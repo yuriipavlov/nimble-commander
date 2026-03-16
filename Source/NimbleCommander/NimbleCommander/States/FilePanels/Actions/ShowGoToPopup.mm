@@ -33,6 +33,8 @@
 #include <pstld/pstld.h>
 
 #include <algorithm>
+#include <deque>
+#include <mutex>
 
 using namespace nc::panel;
 
@@ -42,6 +44,25 @@ static const auto g_ConfigShowOthersKey = "filePanel.general.appendOtherWindowsP
 static const auto g_IconSize = NSMakeSize(16, 16);
 static const auto g_TextAttributes = @{NSFontAttributeName: [NSFont menuFontOfSize:13]};
 static const auto g_MaxTextWidth = 600;
+static const std::size_t g_RecentGoToPathsLimit = 48;
+
+namespace {
+[[clang::no_destroy]] static std::mutex g_RecentGoToPathsMutex;
+[[clang::no_destroy]] static std::deque<std::string> g_RecentGoToPaths;
+
+void RememberRecentGoToPath(const std::string &_path)
+{
+    if( _path.empty() )
+        return;
+    const auto lock = std::lock_guard{g_RecentGoToPathsMutex};
+    auto it = std::find(g_RecentGoToPaths.begin(), g_RecentGoToPaths.end(), _path);
+    if( it != g_RecentGoToPaths.end() )
+        g_RecentGoToPaths.erase(it);
+    g_RecentGoToPaths.push_front(_path);
+    if( g_RecentGoToPaths.size() > g_RecentGoToPathsLimit )
+        g_RecentGoToPaths.pop_back();
+}
+} // namespace
 
 @interface GoToPopupListActionMediator : NSObject <NCCommandPopoverDelegate>
 - (instancetype)initWithState:(MainWindowFilePanelState *)_state
@@ -212,6 +233,8 @@ void PerformGoToWithContext(MainWindowFilePanelState *_state,
                             NetworkConnectionsManager &_net_mgr,
                             const std::any &_context)
 {
+    if( const auto plain_path = std::any_cast<std::string>(&_context); plain_path && !plain_path->empty() )
+        RememberRecentGoToPath(*plain_path);
     auto mediator = [[GoToPopupListActionMediator alloc] initWithState:_state andPanel:_panel networkMgr:_net_mgr];
     [mediator performGoTo:_context sender:nil];
 }
@@ -222,6 +245,12 @@ void PerformGoToWithPath(MainWindowFilePanelState *_state,
                          const std::string &_path)
 {
     PerformGoToWithContext(_state, _panel, _net_mgr, std::any{_path});
+}
+
+std::vector<std::string> RecentGoToPaths()
+{
+    const auto lock = std::lock_guard{g_RecentGoToPathsMutex};
+    return std::vector<std::string>{g_RecentGoToPaths.begin(), g_RecentGoToPaths.end()};
 }
 
 static NSString *ShrinkMenuItemTitle(NSString *_title);
