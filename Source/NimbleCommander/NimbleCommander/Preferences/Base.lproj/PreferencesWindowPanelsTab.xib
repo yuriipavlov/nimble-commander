@@ -1164,6 +1164,16 @@
                                             <binding destination="-3" name="value" keyPath="self.delegate.config.filePanel.general.appendOtherWindowsPathsToGoToMenu" id="WzI-6V-mh7"/>
                                         </connections>
                                     </button>
+                                    <button translatesAutoresizingMaskIntoConstraints="NO" id="NCg-GT-indexLib">
+                                        <rect key="frame" x="326" y="177" width="260" height="18"/>
+                                        <buttonCell key="cell" type="check" title="Index Library folder in Go To palette" bezelStyle="regularSquare" imagePosition="left" inset="2" id="NCg-GT-indexLibCell">
+                                            <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
+                                            <font key="font" metaFont="system"/>
+                                        </buttonCell>
+                                        <connections>
+                                            <binding destination="-3" name="value" keyPath="self.delegate.config.filePanel.gotoPalette.indexLibrary" id="NCg-GT-indexLibBind"/>
+                                        </connections>
+                                    </button>
                                     <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="PAI-kH-D5y">
                                         <rect key="frame" x="218" y="338" width="104" height="16"/>
                                         <textFieldCell key="cell" scrollable="YES" lineBreakMode="clipping" sendsActionOnEndEditing="YES" title="Directory listing:" id="HhR-nU-nWG">

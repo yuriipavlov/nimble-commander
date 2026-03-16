@@ -1,11 +1,15 @@
-// Copyright (C) 2026. Subject to GNU General Public License version 3.
-// Go To palette: fuzzy search over recent/frequent directories.
+// Copyright (C) 2026 Michael Kazakov. Subject to GNU General Public License version 3.
+#pragma once
 
 #import <Cocoa/Cocoa.h>
 
 @class PanelController;
 @class MainWindowFilePanelState;
 @class AnyHolder;
+
+namespace nc::panel {
+class NetworkConnectionsManager;
+}
 
 @interface GoToPaletteEntry : NSObject
 @property(nonatomic, copy) NSString *displayString;
@@ -15,15 +19,13 @@
 /** Block: (query, completion). Call completion on main with folder paths. */
 typedef void (^GoToPaletteSearchBlock)(NSString *query, void (^completion)(NSArray<NSString *> *paths));
 
-@interface GoToPaletteWindowController : NSWindowController <NSTextFieldDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@interface GoToPaletteWindowController
+    : NSWindowController <NSTextFieldDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
 - (instancetype)initWithPanel:(PanelController *)panel
-                       state:(MainWindowFilePanelState *)state
-               networkManager:(void *)networkManager
+                        state:(MainWindowFilePanelState *)state
+               networkManager:(nc::panel::NetworkConnectionsManager &)networkManager
                       entries:(NSArray<GoToPaletteEntry *> *)entries
-                   searchBlock:(GoToPaletteSearchBlock)searchBlock;
+                  searchBlock:(GoToPaletteSearchBlock)searchBlock;
 - (void)showRelativeToWindow:(NSWindow *)parentWindow;
-/** Re-run search with current query (e.g. after index has finished building). */
 - (void)refilterCurrentQuery;
-/** Navigate to the currently selected row (called from panel's performKeyEquivalent for Enter). */
-- (void)performGoToForSelectedRow;
 @end

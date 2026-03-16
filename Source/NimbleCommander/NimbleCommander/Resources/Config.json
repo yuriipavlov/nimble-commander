@@ -245,8 +245,30 @@
              * Storage for the known tags
              */
             "tags": {}
-         },
-  
+        },
+
+        /**
+         * Go To palette (Cmd+P): folder index under HOME
+         */
+        "gotoPalette": {
+            /**
+             * When true, ~/Library is included in the index (slower). When false, Library is skipped.
+             */
+            "indexLibrary": false,
+
+            /**
+             * Comma-separated folder names to skip during Go To palette indexing.
+             * Matching is case-insensitive and applies to any depth.
+             */
+            "excludeNames": "node_modules, vendor, target, dist, build, DerivedData, Caches, Cache, __pycache__, .venv, venv, .cache, .gradle, .m2, .npm, .pnpm-store",
+
+            /**
+             * Comma-separated wildcard masks ("*" and "?") to skip during Go To palette indexing.
+             * Applied to both folder name and full folder path.
+             */
+            "excludeGlobs": "*/Library/Caches/*, */.Trash/*, */.local/share/Trash/*, */.TemporaryItems/*, */tmp/*, */var/tmp/*"
+        },
+
         /**
          * Settings related to Spotlight usage
          */

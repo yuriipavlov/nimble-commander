@@ -1,4 +1,4 @@
-// Copyright (C) 2026. Subject to GNU General Public License version 3.
+// Copyright (C) 2026 Michael Kazakov. Subject to GNU General Public License version 3.
 #include "GoToPalette.h"
 #include "ShowGoToPopup.h"
 #include "../MainWindowFilePanelState.h"
@@ -8,10 +8,13 @@
 #include "../ListingPromise.h"
 #include "../Helpers/LocationFormatter.h"
 #include <NimbleCommander/Bootstrap/AppDelegate.h>
+#include <NimbleCommander/Bootstrap/Config.h>
 #include <NimbleCommander/Core/AnyHolder.h>
 #import "../Views/GoToPaletteWindowController.h"
 #include <Panel/NetworkConnectionsManager.h>
 #include <Foundation/Foundation.h>
+#include <Base/algo.h>
+#include <Base/CommonPaths.h>
 #include <Base/dispatch_cpp.h>
 #include <filesystem>
 #include <vector>
@@ -20,10 +23,16 @@
 #include <unordered_set>
 #include <cerrno>
 #include <system_error>
-#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <memory>
+#include <mutex>
 #include <queue>
-#include <sys/stat.h>
+#include <fnmatch.h>
+#include <fstream>
+#include <optional>
+#include <ctime>
+#include <sstream>
 
 namespace nc::panel::actions {
 
@@ -50,30 +59,204 @@ static void AddUniqueRoot(const std::string &_path, std::vector<std::string> &_r
         _roots.emplace_back(_path);
 }
 
-// Skip hidden folders: name starts with '.' (Unix) or BSD hidden attribute (UF_HIDDEN).
-static bool IsFolderHidden(const std::filesystem::path &_p)
+static bool IsFolderHidden(const std::string &_name)
 {
-    std::string name = _p.filename().string();
-    if( !name.empty() && name[0] == '.' )
-        return true;
-    struct stat st;
-    if( ::stat(_p.c_str(), &st) != 0 )
-        return false;
-    return (st.st_flags & UF_HIDDEN) != 0;
+    return !_name.empty() && _name[0] == '.';
 }
 
-// Budget: target ~2-3 sec index build. 70% HOME / 30% volumes. Fair split per level, BFS.
-static const int kFolderSearchBudget = 3200;
+static const int g_IndexTimeLimitMs = 2000;
+static const int g_SystemRootsMaxDepth = 5;
+static const int g_IndexCacheTTLSeconds = 900;
+static const auto g_ConfigIndexLibrary = "filePanel.gotoPalette.indexLibrary";
+static const auto g_ConfigExcludeNames = "filePanel.gotoPalette.excludeNames";
+static const auto g_ConfigExcludeGlobs = "filePanel.gotoPalette.excludeGlobs";
 
-// macOS TCC-protected subfolders under HOME (Documents, Desktop, etc.). Accessing them triggers
-// a permission dialog when Full Disk Access is not granted. Check FDA once, then skip these if needed.
-static const char* const kMacOSProtectedHomeSubdirs[] = {
-    "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures"
+struct PersistedIndex {
+    std::string key;
+    std::time_t saved_at = 0;
+    std::vector<std::string> paths;
 };
-static bool IsMacOSProtectedHomeSubdir(const std::string &_name)
+
+// TCC-protected HOME subdirs — accessing without FDA triggers permission dialogs.
+static const char *const g_TCCProtectedHomeSubdirs[] = {
+    "Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures"
+};
+static bool IsTCCProtectedHomeSubdir(const std::string &_name)
 {
-    for( const char* p : kMacOSProtectedHomeSubdirs ) {
+    for( const char *p : g_TCCProtectedHomeSubdirs ) {
         if( _name == p )
+            return true;
+    }
+    return false;
+}
+
+// HOME subdirs that are always skipped — too large and not useful for navigation.
+static const char *const g_AlwaysSkippedHomeSubdirs[] = {
+    "Library"
+};
+static bool IsAlwaysSkippedHomeSubdir(const std::string &_name)
+{
+    for( const char *p : g_AlwaysSkippedHomeSubdirs ) {
+        if( _name == p )
+            return true;
+    }
+    return false;
+}
+
+static std::string BuildCacheFilePath()
+{
+    return nc::base::CommonPaths::AppTemporaryDirectory() + "nimble-goto-index-cache-v1.txt";
+}
+
+static uint64_t FNV1a64(std::string_view _input) noexcept
+{
+    uint64_t hash = 1469598103934665603ull;
+    for( const unsigned char c : _input ) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static std::string Hex64(uint64_t _v)
+{
+    std::ostringstream oss;
+    oss << std::hex << _v;
+    return oss.str();
+}
+
+static std::string BuildIndexCacheKey(const std::string &_home_root,
+                                      const std::vector<std::string> &_low_priority_roots,
+                                      bool _index_library,
+                                      std::string_view _exclude_names_csv,
+                                      std::string_view _exclude_globs_csv)
+{
+    std::string material = _home_root;
+    material += '\x1f';
+    material += (_index_library ? "1" : "0");
+    material += '\x1f';
+    material += _exclude_names_csv;
+    material += '\x1f';
+    material += _exclude_globs_csv;
+    material += '\x1f';
+    for( const auto &r : _low_priority_roots ) {
+        material += r;
+        material += ';';
+    }
+    return Hex64(FNV1a64(material));
+}
+
+static bool IsCacheFresh(std::time_t _saved_at)
+{
+    if( _saved_at <= 0 )
+        return false;
+    const std::time_t now = std::time(nullptr);
+    if( now <= _saved_at )
+        return true;
+    return (now - _saved_at) <= g_IndexCacheTTLSeconds;
+}
+
+static std::optional<PersistedIndex> LoadPersistedIndexCache(const std::string &_path)
+{
+    std::ifstream in(_path, std::ios::in | std::ios::binary);
+    if( !in )
+        return std::nullopt;
+
+    std::string magic;
+    std::string key;
+    std::string ts_line;
+    std::string count_line;
+    if( !std::getline(in, magic) || !std::getline(in, key) || !std::getline(in, ts_line) || !std::getline(in, count_line) )
+        return std::nullopt;
+    if( magic != "NC_GOTO_INDEX_CACHE_V1" )
+        return std::nullopt;
+
+    std::time_t saved_at = 0;
+    std::size_t count = 0;
+    try {
+        saved_at = static_cast<std::time_t>(std::stoll(ts_line));
+        count = static_cast<std::size_t>(std::stoull(count_line));
+    } catch( ... ) {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> paths;
+    paths.reserve(count);
+    std::string line;
+    while( std::getline(in, line) ) {
+        if( !line.empty() )
+            paths.emplace_back(std::move(line));
+    }
+    if( paths.size() > count )
+        paths.resize(count);
+
+    PersistedIndex cached;
+    cached.key = std::move(key);
+    cached.saved_at = saved_at;
+    cached.paths = std::move(paths);
+    return cached;
+}
+
+static void SavePersistedIndexCache(const std::string &_path, const PersistedIndex &_cache)
+{
+    std::ofstream out(_path, std::ios::out | std::ios::binary | std::ios::trunc);
+    if( !out )
+        return;
+    out << "NC_GOTO_INDEX_CACHE_V1\n";
+    out << _cache.key << '\n';
+    out << static_cast<long long>(_cache.saved_at) << '\n';
+    out << _cache.paths.size() << '\n';
+    for( const auto &p : _cache.paths )
+        out << p << '\n';
+}
+
+struct InMemoryIndexCache {
+    std::mutex mutex;
+    std::string key;
+    std::time_t saved_at = 0;
+    std::vector<std::string> paths;
+};
+
+static InMemoryIndexCache &IndexCacheMemory()
+{
+    static InMemoryIndexCache cache;
+    return cache;
+}
+
+static std::vector<std::string> ParseCSVList(std::string_view _csv)
+{
+    std::vector<std::string> out;
+    for( const auto &token : base::SplitByDelimiters(_csv, ",", false) ) {
+        if( auto trimmed = nc::base::Trim(token); !trimmed.empty() )
+            out.emplace_back(trimmed);
+    }
+    return out;
+}
+
+static bool MatchGlobCaseInsensitive(const std::string &_candidate, const std::string &_glob)
+{
+    if( _candidate.empty() || _glob.empty() )
+        return false;
+#ifdef FNM_CASEFOLD
+    return fnmatch(_glob.c_str(), _candidate.c_str(), FNM_CASEFOLD) == 0;
+#else
+    std::string c = _candidate;
+    std::string g = _glob;
+    std::transform(c.begin(), c.end(), c.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(g.begin(), g.end(), g.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return fnmatch(g.c_str(), c.c_str(), 0) == 0;
+#endif
+}
+
+static bool IsExcluded(const std::string &_dir_path,
+                       const std::string &_dir_name,
+                       const std::unordered_set<std::string> &_exclude_names,
+                       const std::vector<std::string> &_exclude_globs)
+{
+    if( _exclude_names.contains(_dir_name) )
+        return true;
+    for( const auto &glob : _exclude_globs ) {
+        if( MatchGlobCaseInsensitive(_dir_name, glob) || MatchGlobCaseInsensitive(_dir_path, glob) )
             return true;
     }
     return false;
@@ -102,22 +285,23 @@ static bool ProbeFullDiskAccess(const std::string &_home)
     return true;
 }
 
-// BFS + budget, collect all visited paths. Index built at palette open. Full HOME subtree when
-// FDA is granted; otherwise skip TCC-protected HOME subdirs to avoid repeated permission dialogs.
-static std::vector<std::string> BuildFolderIndexWithBudget(const std::vector<std::string> &_roots)
+// BFS with time limit. HOME is traversed first (max priority), then low-priority roots with depth cap.
+// When _index_library is false, ~/Library is skipped (saves time; enable in preferences if needed).
+static std::vector<std::string> BuildFolderIndex(const std::string &_home_root,
+                                                 const std::vector<std::string> &_low_priority_roots,
+                                                 bool _index_library,
+                                                 const std::unordered_set<std::string> &_exclude_names,
+                                                 const std::vector<std::string> &_exclude_globs)
 {
     namespace fs = std::filesystem;
-    static const int kTotalPoints = kFolderSearchBudget;
-    static const int kHomePercent = 70;
-    static const int kHomeBudget = (kTotalPoints * kHomePercent) / 100;
-    static const int kVolumesBudget = kTotalPoints - kHomeBudget;
+    using clock = std::chrono::steady_clock;
 
     std::vector<std::string> index;
-    index.reserve(kTotalPoints);
+    index.reserve(8192);
     std::unordered_set<std::string> visited;
     std::error_code ec;
 
-    if( _roots.empty() )
+    if( _home_root.empty() )
         return index;
 
     auto normalize_path = [](std::string s) {
@@ -126,127 +310,91 @@ static std::vector<std::string> BuildFolderIndexWithBudget(const std::vector<std
         return s;
     };
 
-    std::string home_normalized = normalize_path(_roots[0]);
+    std::string home_normalized = normalize_path(_home_root);
     const bool has_fda = ProbeFullDiskAccess(home_normalized);
+    const auto deadline = clock::now() + std::chrono::milliseconds(g_IndexTimeLimitMs);
 
-    auto get_children = [&](const std::string &_dir) -> std::vector<std::string> {
+    auto get_children = [&](const std::string &_dir, bool _is_home) -> std::vector<std::string> {
         std::vector<std::string> out;
-        fs::path p(_dir);
-        if( !fs::exists(p, ec) || !fs::is_directory(p, ec) ) {
-            ec.clear();
-            return out;
-        }
-        fs::directory_iterator it(p, fs::directory_options::skip_permission_denied, ec);
+        fs::directory_iterator it(_dir, fs::directory_options::skip_permission_denied, ec);
         if( ec ) {
             ec.clear();
             return out;
         }
         for( ; it != fs::directory_iterator(); it.increment(ec) ) {
             if( ec ) {
-                if( ec == std::errc::permission_denied || ec.value() == EACCES || ec.value() == EPERM )
-                    break;
                 ec.clear();
                 continue;
             }
             if( !it->is_directory(ec) )
                 continue;
             ec.clear();
-            if( IsFolderHidden(it->path()) )
-                continue;
             std::string name = it->path().filename().string();
-            if( !has_fda && normalize_path(_dir) == home_normalized &&
-                IsMacOSProtectedHomeSubdir(name) )
+            if( IsFolderHidden(name) )
                 continue;
-            std::string child = normalize_path(it->path().lexically_normal().string());
-            if( !child.empty() )
-                out.push_back(child);
+            if( _is_home && !_index_library && IsAlwaysSkippedHomeSubdir(name) )
+                continue;
+            if( !has_fda && _is_home && IsTCCProtectedHomeSubdir(name) )
+                continue;
+            std::string child = _dir + "/" + name;
+            if( IsExcluded(child, name, _exclude_names, _exclude_globs) )
+                continue;
+            out.push_back(std::move(child));
         }
         ec.clear();
         return out;
     };
 
-    struct Task {
-        std::string path;
-        int budget;
-    };
-    std::queue<Task> queue;
+    auto traverse_root = [&](const std::string &_root, bool _is_home, int _max_depth) {
+        std::queue<std::pair<std::string, int>> queue;
+        queue.push({normalize_path(_root), 0});
+        while( !queue.empty() && clock::now() < deadline ) {
+            auto [path, depth] = std::move(queue.front());
+            queue.pop();
+            if( !visited.insert(path).second )
+                continue;
+            index.push_back(path);
 
-    auto push_root = [&](const std::string &root_str, int budget) {
-        std::string path_str = normalize_path(root_str);
-        if( path_str.empty() || budget <= 0 )
-            return;
-        queue.push({path_str, budget});
-    };
+            if( _max_depth >= 0 && depth >= _max_depth )
+                continue;
 
-    if( _roots.size() == 1 ) {
-        push_root(_roots[0], kHomeBudget);
-    } else {
-        push_root(_roots[0], kHomeBudget);
-        int per_volume = kVolumesBudget / static_cast<int>(_roots.size() - 1);
-        for( size_t i = 1; i < _roots.size(); ++i )
-            push_root(_roots[i], per_volume);
-    }
-
-    while( !queue.empty() ) {
-        Task t = queue.front();
-        queue.pop();
-        if( t.budget <= 0 )
-            continue;
-        if( !visited.insert(t.path).second )
-            continue;
-        index.push_back(t.path);
-
-        int remaining = t.budget - 1;
-        if( remaining <= 0 )
-            continue;
-
-        std::vector<std::string> children = get_children(t.path);
-        if( children.empty() )
-            continue;
-        int n = static_cast<int>(children.size());
-        int base = remaining / n;
-        int extra = remaining % n;
-        for( int i = 0; i < n; ++i ) {
-            int cb = base + (i < extra ? 1 : 0);
-            if( cb > 0 )
-                queue.push({children[static_cast<size_t>(i)], cb});
+            for( auto &child : get_children(path, _is_home) )
+                queue.push({std::move(child), depth + 1});
         }
+    };
+
+    // Highest priority: HOME.
+    traverse_root(home_normalized, true, -1);
+
+    // Lower priority: system roots, shallow traversal only.
+    for( const auto &root : _low_priority_roots ) {
+        if( clock::now() >= deadline )
+            break;
+        traverse_root(root, false, g_SystemRootsMaxDepth);
     }
 
     return index;
 }
 
-// Filter index by folder name only (last path component). Case-insensitive substring. No duplicates. Max 192.
+// Filter index by folder name only (last path component). Case-insensitive substring. Max 192.
 static std::vector<std::string> FilterIndexByFolderName(const std::vector<std::string> &_index,
                                                         const std::string &_needle)
 {
-    namespace fs = std::filesystem;
-    static const std::size_t kMaxResults = 192;
+    const std::size_t max_results = 192;
     std::vector<std::string> result;
-    result.reserve(std::min(kMaxResults, _index.size()));
-    std::unordered_set<std::string> unique;
+    result.reserve(std::min(max_results, _index.size()));
     if( _needle.empty() )
         return result;
     for( const auto &path_str : _index ) {
-        if( result.size() >= kMaxResults )
+        if( result.size() >= max_results )
             break;
-        fs::path p(path_str);
-        p = p.lexically_normal();
-        std::string normalized = p.string();
-        while( !normalized.empty() && (normalized.back() == '/' || normalized.back() == '\\') )
-            normalized.pop_back();
-        std::string dir_name = p.filename().string();
-        if( dir_name.empty() && !normalized.empty() ) {
-            size_t sep = normalized.find_last_of("/\\");
-            dir_name = (sep != std::string::npos && sep + 1 < normalized.size())
-                ? normalized.substr(sep + 1) : normalized;
-        }
+        size_t sep = path_str.rfind('/');
+        const std::string &dir_name = (sep != std::string::npos) ? path_str.substr(sep + 1) : path_str;
         if( dir_name.empty() )
             continue;
         if( !ContainsCaseInsensitive(dir_name, _needle) )
             continue;
-        if( unique.insert(normalized).second )
-            result.push_back(normalized);
+        result.push_back(path_str);
     }
     return result;
 }
@@ -321,46 +469,47 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
         [entries addObject:e];
     }
 
-    std::vector<std::string> roots;
-    std::unordered_set<std::string> seen_roots;
+    std::string home_root;
 
-    // HOME only (whole home tree, folders only, depth 5), then volumes.
+    // HOME is the top-priority root.
     if( NSString *home = NSHomeDirectory() ) {
         if( const char *utf8 = home.UTF8String ) {
             std::string home_str(utf8);
             while( !home_str.empty() && home_str.back() == '/' )
                 home_str.pop_back();
-            if( !home_str.empty() )
-                AddUniqueRoot(home_str, roots, seen_roots);
+            home_root = std::move(home_str);
         }
     }
 
-    // All mounted volumes (external disks + boot): each up to 5 levels.
+    std::vector<std::string> low_priority_roots;
+    std::unordered_set<std::string> seen_low_priority_roots;
+
+    // Low-priority system roots: searched only if time remains and with shallow depth.
     {
+        static const char *const g_SystemRoots[] = {
+            "/etc",
+            "/private/etc",
+            "/usr/local/etc",
+            "/opt/homebrew/etc",
+        };
         std::error_code ec;
-        std::filesystem::path volumes_path("/Volumes");
-        if( std::filesystem::exists(volumes_path, ec) && std::filesystem::is_directory(volumes_path, ec) ) {
-            for( std::filesystem::directory_iterator v(volumes_path, std::filesystem::directory_options::skip_permission_denied, ec); v != std::filesystem::directory_iterator(); v.increment(ec) ) {
-                if( ec ) {
-                    ec.clear();
-                    continue;
-                }
-                if( !v->is_directory(ec) )
-                    continue;
-                if( ec ) {
-                    ec.clear();
-                    continue;
-                }
-                std::string vol = v->path().string();
-                AddUniqueRoot(vol, roots, seen_roots);
+        for( const char *p : g_SystemRoots ) {
+            std::filesystem::path root_path(p);
+            if( !std::filesystem::exists(root_path, ec) || !std::filesystem::is_directory(root_path, ec) ) {
+                ec.clear();
+                continue;
             }
+            ec.clear();
+            AddUniqueRoot(root_path.string(), low_priority_roots, seen_low_priority_roots);
         }
     }
 
-    auto roots_copy = std::make_shared<std::vector<std::string>>(roots);
+    auto home_root_copy = std::make_shared<std::string>(home_root);
+    auto low_priority_roots_copy = std::make_shared<std::vector<std::string>>(low_priority_roots);
     struct IndexState {
+        std::mutex mutex;
         std::vector<std::string> paths;
-        std::atomic<bool> ready{false};
+        bool ready = false;
     };
     auto index_state = std::make_shared<IndexState>();
 
@@ -373,13 +522,13 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
         if( completion_copy == nil )
             return;
 
-        const auto roots_ref = roots_copy;
         const auto state = index_state;
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), [roots_ref, state, query_copy, completion_copy] {
+        dispatch_to_default([state, query_copy, completion_copy] {
             std::vector<std::string> matches;
             const char *q_utf8 = query_copy.lowercaseString.UTF8String;
             const std::string needle = q_utf8 ? std::string(q_utf8) : std::string();
             try {
+                const auto lock = std::lock_guard{state->mutex};
                 if( state->ready && !state->paths.empty() )
                     matches = FilterIndexByFolderName(state->paths, needle);
             } catch( ... ) {
@@ -391,28 +540,95 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
                 if( s )
                     [result addObject:s];
             }
-            dispatch_async(dispatch_get_main_queue(), [result, completion_copy] {
-                completion_copy(result);
-            });
+            dispatch_to_main_queue([result, completion_copy] { completion_copy(result); });
         });
     };
 
     GoToPaletteWindowController *wc = [[GoToPaletteWindowController alloc] initWithPanel:panel
                                                                                   state:_target
-                                                                          networkManager:&m_NetMgr
+                                                                          networkManager:m_NetMgr
                                                                                  entries:entries
                                                                               searchBlock:search_block];
-    __weak GoToPaletteWindowController *wc_weak = wc;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), [roots_copy, index_state, wc_weak] {
-        try {
-            index_state->paths = BuildFolderIndexWithBudget(*roots_copy);
+    static GoToPaletteWindowController *g_CurrentPalette = nil;
+    if( g_CurrentPalette != nil )
+        g_CurrentPalette = nil;
+    g_CurrentPalette = wc;
+    const bool index_library = GlobalConfig().GetBool(g_ConfigIndexLibrary);
+    const std::string exclude_names_csv = GlobalConfig().GetString(g_ConfigExcludeNames);
+    const std::string exclude_globs_csv = GlobalConfig().GetString(g_ConfigExcludeGlobs);
+    std::unordered_set<std::string> exclude_names;
+    for( const auto &name : ParseCSVList(exclude_names_csv) )
+        exclude_names.insert(name);
+    const std::vector<std::string> exclude_globs = ParseCSVList(exclude_globs_csv);
+    const std::string cache_key =
+        BuildIndexCacheKey(*home_root_copy, *low_priority_roots_copy, index_library, exclude_names_csv, exclude_globs_csv);
+    const std::string cache_file_path = BuildCacheFilePath();
+
+    bool has_initial_cache = false;
+    bool cache_is_fresh = false;
+    {
+        auto &mem = IndexCacheMemory();
+        const auto lock = std::lock_guard{mem.mutex};
+        if( mem.key == cache_key && !mem.paths.empty() ) {
+            index_state->paths = mem.paths;
             index_state->ready = true;
+            has_initial_cache = true;
+            cache_is_fresh = IsCacheFresh(mem.saved_at);
+        }
+    }
+    if( !has_initial_cache ) {
+        if( auto persisted = LoadPersistedIndexCache(cache_file_path);
+            persisted && persisted->key == cache_key && !persisted->paths.empty() ) {
+            index_state->paths = persisted->paths;
+            index_state->ready = true;
+            has_initial_cache = true;
+            cache_is_fresh = IsCacheFresh(persisted->saved_at);
+            auto &mem = IndexCacheMemory();
+            const auto lock = std::lock_guard{mem.mutex};
+            mem.key = persisted->key;
+            mem.saved_at = persisted->saved_at;
+            mem.paths = std::move(persisted->paths);
+        }
+    }
+    __weak GoToPaletteWindowController *wc_weak = wc;
+    if( !cache_is_fresh ) {
+        dispatch_to_default([home_root_copy,
+                             low_priority_roots_copy,
+                             index_state,
+                             wc_weak,
+                             index_library,
+                             exclude_names,
+                             exclude_globs,
+                             cache_key,
+                             cache_file_path] {
+        try {
+            const auto t0 = std::chrono::steady_clock::now();
+            auto paths =
+                BuildFolderIndex(*home_root_copy, *low_priority_roots_copy, index_library, exclude_names, exclude_globs);
+            const auto t1 = std::chrono::steady_clock::now();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            if( FILE *f = std::fopen("/tmp/nimble_goto_index_log.txt", "w") ) {
+                std::fprintf(f, "index built in %lld ms, %zu folders\n", static_cast<long long>(ms), paths.size());
+                std::fclose(f);
+            }
+            const auto lock = std::lock_guard{index_state->mutex};
+            index_state->paths = std::move(paths);
+            index_state->ready = true;
+            PersistedIndex cache;
+            cache.key = cache_key;
+            cache.saved_at = std::time(nullptr);
+            cache.paths = index_state->paths;
+            SavePersistedIndexCache(cache_file_path, cache);
+            auto &mem = IndexCacheMemory();
+            const auto mem_lock = std::lock_guard{mem.mutex};
+            mem.key = cache.key;
+            mem.saved_at = cache.saved_at;
+            mem.paths = std::move(cache.paths);
         } catch( ... ) {
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [wc_weak refilterCurrentQuery];
+        dispatch_to_main_queue([wc_weak] { [wc_weak refilterCurrentQuery]; });
         });
-    });
+    }
     [wc showRelativeToWindow:_target.window];
 }
 

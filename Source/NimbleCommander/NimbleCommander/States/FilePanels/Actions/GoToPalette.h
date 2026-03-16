@@ -1,5 +1,4 @@
-// Copyright (C) 2026. Subject to GNU General Public License version 3.
-// Go To palette: fuzzy search over recent/frequent directories.
+// Copyright (C) 2026 Michael Kazakov. Subject to GNU General Public License version 3.
 
 #pragma once
 

@@ -1,5 +1,4 @@
-// Copyright (C) 2026. Subject to GNU General Public License version 3.
-// Go To palette.
+// Copyright (C) 2026 Michael Kazakov. Subject to GNU General Public License version 3.
 
 #import "GoToPaletteWindowController.h"
 #import "../MainWindowFilePanelState.h"
@@ -7,30 +6,28 @@
 #import <NimbleCommander/Core/AnyHolder.h>
 #import "../Actions/ShowGoToPopup.h"
 #import <Panel/NetworkConnectionsManager.h>
-#import <algorithm>
-#import <string>
+#include <algorithm>
+#include <string>
 
-static const CGFloat kWindowWidth = 520.;
-static const CGFloat kSearchHeight = 28.;
-static const CGFloat kTableRowHeight = 22.;
-static const CGFloat kMaxVisibleRows = 14.;
-static const CGFloat kPadding = 8.;
+static const CGFloat g_WindowWidth = 520.;
+static const CGFloat g_SearchHeight = 28.;
+static const CGFloat g_TableRowHeight = 22.;
+static const CGFloat g_MaxVisibleRows = 14.;
+static const CGFloat g_Padding = 8.;
 
 @implementation GoToPaletteEntry
 @synthesize displayString;
 @synthesize context;
 @end
 
-// Panel subclass that keeps key events from bubbling to the parent (child window best practice).
-// Overriding nextResponder to nil stops the responder chain; performKeyEquivalent handles Enter/Esc.
 @interface GoToPalettePanel : NSPanel
 @end
 
+@protocol GoToPalettePerforming <NSObject>
+- (void)performGoToForSelectedRow;
+@end
+
 @implementation GoToPalettePanel
-- (NSResponder *)nextResponder
-{
-    return nil; // Don't pass unhandled events to parent window.
-}
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event
 {
@@ -38,14 +35,33 @@ static const CGFloat kPadding = 8.;
         [self close];
         return YES;
     }
-    if( event.keyCode == 36 ) { // Enter (Return)
+    if( event.keyCode == 36 ) { // Return
         id d = self.delegate;
         if( [d respondsToSelector:@selector(performGoToForSelectedRow)] )
-            [d performSelector:@selector(performGoToForSelectedRow)];
+            [static_cast<id<GoToPalettePerforming>>(d) performGoToForSelectedRow];
         return YES;
     }
     return [super performKeyEquivalent:event];
 }
+
+@end
+
+@interface GoToPaletteTableView : NSTableView
+@property(nonatomic, weak) NSSearchField *paletteSearchField;
+@end
+
+@implementation GoToPaletteTableView
+@synthesize paletteSearchField = _paletteSearchField;
+
+- (void)keyDown:(NSEvent *)event
+{
+    if( event.keyCode == 126 && self.selectedRow <= 0 ) {
+        [self.window makeFirstResponder:self.paletteSearchField];
+        return;
+    }
+    [super keyDown:event];
+}
+
 @end
 
 @interface GoToPaletteWindowController () <NSWindowDelegate>
@@ -55,14 +71,13 @@ static const CGFloat kPadding = 8.;
 @property(nonatomic, copy) NSArray<GoToPaletteEntry *> *allEntries;
 @property(nonatomic, copy) NSArray<GoToPaletteEntry *> *filteredEntries;
 @property(nonatomic, strong) NSSearchField *searchField;
-@property(nonatomic, strong) NSTableView *tableView;
+@property(nonatomic, strong) GoToPaletteTableView *tableView;
 @property(nonatomic, strong) NSScrollView *scrollView;
-@property(nonatomic, strong) id textChangeObserver;
 @property(nonatomic, copy) GoToPaletteSearchBlock searchBlock;
 @property(nonatomic, copy) NSArray<NSString *> *extraPathResults;
 @property(nonatomic, assign) NSInteger searchGeneration;
-@property(nonatomic, strong) NSTimer *filterTimer;
 @property(nonatomic, copy) NSString *lastAppliedQuery;
+- (void)performGoToForSelectedRow;
 @end
 
 @implementation GoToPaletteWindowController
@@ -74,30 +89,40 @@ static const CGFloat kPadding = 8.;
 @synthesize searchField = _searchField;
 @synthesize tableView = _tableView;
 @synthesize scrollView = _scrollView;
-@synthesize textChangeObserver = _textChangeObserver;
 @synthesize searchBlock = _searchBlock;
 @synthesize extraPathResults = _extraPathResults;
 @synthesize searchGeneration = _searchGeneration;
-@synthesize filterTimer = _filterTimer;
 @synthesize lastAppliedQuery = _lastAppliedQuery;
 
 - (instancetype)initWithPanel:(PanelController *)panel
-                       state:(MainWindowFilePanelState *)state
-               networkManager:(void *)networkManager
+                        state:(MainWindowFilePanelState *)state
+               networkManager:(nc::panel::NetworkConnectionsManager &)networkManager
                       entries:(NSArray<GoToPaletteEntry *> *)entries
-                   searchBlock:(GoToPaletteSearchBlock)searchBlock
+                  searchBlock:(GoToPaletteSearchBlock)searchBlock
 {
     self = [super initWithWindow:nil];
     if( self ) {
         _panel = panel;
         _state = state;
-        _networkManager = static_cast<nc::panel::NetworkConnectionsManager *>(networkManager);
+        _networkManager = &networkManager;
         _allEntries = [entries copy];
         _filteredEntries = [entries copy];
         _searchBlock = [searchBlock copy];
         _extraPathResults = @[];
     }
     return self;
+}
+
+static NSString *ShortenWithTilde(NSString *path)
+{
+    static NSString *homePrefix = NSHomeDirectory();
+    if( !path || path.length == 0 )
+        return path;
+    if( [path hasPrefix:homePrefix] ) {
+        NSString *rest = [path substringFromIndex:homePrefix.length];
+        return [@"~" stringByAppendingString:rest];
+    }
+    return path;
 }
 
 static bool QueryMatches(NSString *query, NSString *candidate)
@@ -114,13 +139,11 @@ static NSString *NormalizePathForDedup(NSString *path)
     if( !path || path.length == 0 )
         return @"";
     NSString *s = [path copy];
-    while( s.length > 1 && ( [s hasSuffix:@"/"] || [s hasSuffix:@"\\"] ) )
+    while( s.length > 1 && ([s hasSuffix:@"/"] || [s hasSuffix:@"\\"]) )
         s = [s substringToIndex:s.length - 1];
     return s.lowercaseString ?: @"";
 }
 
-// Use folder name (last path component) for matching when candidate looks like a path,
-// so "va" matches "Valerii" but not "LeadsMarket" (path contains "yuriipavlov").
 static NSString *DisplayStringForFiltering(NSString *displayString)
 {
     if( !displayString || displayString.length == 0 )
@@ -136,11 +159,11 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
         return [[NSAttributedString alloc] initWithString:@""];
     NSFont *baseFont = [NSFont systemFontOfSize:12];
     if( !query || query.length == 0 ) {
-        return [[NSAttributedString alloc] initWithString:text attributes:@{ NSFontAttributeName: baseFont }];
+        return [[NSAttributedString alloc] initWithString:text attributes:@{NSFontAttributeName: baseFont}];
     }
 
     NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithString:text
-                                                                               attributes:@{ NSFontAttributeName: baseFont }];
+                                                                               attributes:@{NSFontAttributeName: baseFont}];
     NSDictionary *highlightAttrs = @{
         NSBackgroundColorAttributeName: [NSColor.selectedTextBackgroundColor colorWithAlphaComponent:0.6],
         NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
@@ -225,21 +248,10 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
     [self filterWithQuery:self.searchField.stringValue];
 }
 
-- (void)applyFilterFromSearchFieldTimer:(NSTimer *)timer
-{
-    [self filterWithQuery:self.searchField.stringValue];
-}
-
 - (void)refilterCurrentQuery
 {
     self.lastAppliedQuery = nil;
     [self filterWithQuery:self.searchField.stringValue];
-}
-
-- (void)windowDidLoad
-{
-    [super windowDidLoad];
-    self.window.delegate = self;
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification
@@ -249,11 +261,11 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
 
 - (void)buildWindow
 {
-    NSRect contentRect = NSMakeRect(0, 0, kWindowWidth, kSearchHeight + kPadding * 2 + kTableRowHeight * kMaxVisibleRows);
+    NSRect contentRect = NSMakeRect(0, 0, g_WindowWidth, g_SearchHeight + g_Padding * 2 + g_TableRowHeight * g_MaxVisibleRows);
     GoToPalettePanel *floatingPanel = [[GoToPalettePanel alloc] initWithContentRect:contentRect
-                                                                           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                                                                             backing:NSBackingStoreBuffered
-                                                                               defer:NO];
+                                                                          styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                                                            backing:NSBackingStoreBuffered
+                                                                              defer:NO];
     floatingPanel.title = @"GoTo";
     floatingPanel.level = NSFloatingWindowLevel;
     floatingPanel.becomesKeyOnlyIfNeeded = NO;
@@ -264,38 +276,31 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
     NSView *content = floatingPanel.contentView;
     content.wantsLayer = YES;
 
-    self.searchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(kPadding, contentRect.size.height - kSearchHeight - kPadding, kWindowWidth - kPadding * 2, kSearchHeight)];
+    self.searchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(g_Padding, contentRect.size.height - g_SearchHeight - g_Padding, g_WindowWidth - g_Padding * 2, g_SearchHeight)];
     self.searchField.placeholderString = NSLocalizedString(@"Type to filter…", @"Go To palette search placeholder");
     self.searchField.delegate = self;
-    __weak __typeof__(self) wself = self;
-    self.textChangeObserver = [[NSNotificationCenter defaultCenter]
-        addObserverForName:NSControlTextDidChangeNotification
-                    object:self.searchField
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *_Nonnull __unused note) {
-                    [wself filterWithQuery:wself.searchField.stringValue];
-                }];
     NSSearchFieldCell *searchCell = static_cast<NSSearchFieldCell *>(self.searchField.cell);
     searchCell.sendsWholeSearchString = NO;
     searchCell.sendsSearchStringImmediately = YES;
     [content addSubview:self.searchField];
 
-    CGFloat tableHeight = kTableRowHeight * kMaxVisibleRows;
-    self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(kPadding, kPadding, kWindowWidth - kPadding * 2, tableHeight)];
+    CGFloat tableHeight = g_TableRowHeight * g_MaxVisibleRows;
+    self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(g_Padding, g_Padding, g_WindowWidth - g_Padding * 2, tableHeight)];
     self.scrollView.hasVerticalScroller = YES;
     self.scrollView.borderType = NSBezelBorder;
     self.scrollView.autohidesScrollers = YES;
 
-    self.tableView = [[NSTableView alloc] initWithFrame:self.scrollView.bounds];
+    self.tableView = [[GoToPaletteTableView alloc] initWithFrame:self.scrollView.bounds];
+    self.tableView.paletteSearchField = self.searchField;
     self.tableView.headerView = nil;
-    self.tableView.rowHeight = kTableRowHeight;
+    self.tableView.rowHeight = g_TableRowHeight;
     self.tableView.intercellSpacing = NSMakeSize(0, 0);
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.doubleAction = @selector(onDoubleClick:);
     self.tableView.target = self;
     NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"path"];
-    col.width = kWindowWidth - kPadding * 2;
+    col.width = g_WindowWidth - g_Padding * 2;
     col.resizingMask = NSTableColumnAutoresizingMask;
     [self.tableView addTableColumn:col];
     self.scrollView.documentView = self.tableView;
@@ -319,12 +324,6 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
     [win makeKeyAndOrderFront:nil];
     [self.searchField becomeFirstResponder];
     [self filterWithQuery:self.searchField.stringValue];
-    self.filterTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
-                                                        target:self
-                                                      selector:@selector(applyFilterFromSearchFieldTimer:)
-                                                      userInfo:nil
-                                                       repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.filterTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)performGoToForSelectedRow
@@ -379,11 +378,6 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
     return row >= 0 && static_cast<size_t>(row) < total;
 }
 
-- (void)tableViewSelectionDidChange:(NSNotification *)notification
-{
-    // allow arrow keys to move selection
-}
-
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView
 {
     return static_cast<NSInteger>(self.filteredEntries.count + self.extraPathResults.count);
@@ -397,19 +391,20 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
         return nil;
     NSString *display = nil;
     if( static_cast<size_t>(row) < historyCount ) {
-        display = self.filteredEntries[row].displayString;
+        display = ShortenWithTilde(self.filteredEntries[row].displayString);
     } else {
-        display = self.extraPathResults[row - historyCount];
+        display = ShortenWithTilde(self.extraPathResults[row - historyCount]);
     }
     NSTableCellView *cell = [tableView makeViewWithIdentifier:@"PathCell" owner:self];
     if( !cell ) {
-        cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, tableColumn.width, kTableRowHeight)];
+        cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, tableColumn.width, g_TableRowHeight)];
         cell.identifier = @"PathCell";
         NSTextField *textField = [[NSTextField alloc] initWithFrame:NSInsetRect(cell.bounds, 4, 2)];
         textField.editable = NO;
         textField.bordered = NO;
         textField.drawsBackground = NO;
         textField.font = [NSFont systemFontOfSize:12];
+        textField.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         [cell addSubview:textField];
         cell.textField = textField;
     }
@@ -419,12 +414,6 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
 
 - (void)windowWillClose:(NSNotification *)notification
 {
-    [self.filterTimer invalidate];
-    self.filterTimer = nil;
-    if( self.textChangeObserver ) {
-        [[NSNotificationCenter defaultCenter] removeObserver:self.textChangeObserver];
-        self.textChangeObserver = nil;
-    }
     NSWindow *win = self.window;
     if( win.parentWindow )
         [win.parentWindow removeChildWindow:win];
