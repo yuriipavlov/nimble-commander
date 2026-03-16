@@ -266,7 +266,13 @@
              * Comma-separated wildcard masks ("*" and "?") to skip during Go To palette indexing.
              * Applied to both folder name and full folder path.
              */
-            "excludeGlobs": "*/Library/Caches/*, */.Trash/*, */.local/share/Trash/*, */.TemporaryItems/*, */tmp/*, */var/tmp/*"
+            "excludeGlobs": "*/Library/Caches/*, */.Trash/*, */.local/share/Trash/*, */.TemporaryItems/*, */tmp/*, */var/tmp/*",
+
+            /**
+             * Enable verbose debug logging for Go To palette indexer.
+             * When true, writes timing and cache stats into /tmp/nimble_goto_index_log.txt.
+             */
+            "debugLogging": false
         },
 
         /**

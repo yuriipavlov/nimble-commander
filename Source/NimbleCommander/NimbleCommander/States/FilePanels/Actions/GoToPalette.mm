@@ -75,6 +75,7 @@ static const std::size_t g_DefaultFirstLevelChildrenLimit = 96;
 static const auto g_ConfigIndexLibrary = "filePanel.gotoPalette.indexLibrary";
 static const auto g_ConfigExcludeNames = "filePanel.gotoPalette.excludeNames";
 static const auto g_ConfigExcludeGlobs = "filePanel.gotoPalette.excludeGlobs";
+static const auto g_ConfigDebugLogging = "filePanel.gotoPalette.debugLogging";
 
 struct PersistedIndex {
     std::string key;
@@ -716,6 +717,7 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
     bool has_initial_cache = false;
     bool cache_is_fresh = false;
     std::time_t cached_saved_at = 0;
+    const bool debug_logging = GlobalConfig().Has(g_ConfigDebugLogging) && GlobalConfig().GetBool(g_ConfigDebugLogging);
     {
         auto &mem = IndexCacheMemory();
         const auto lock = std::lock_guard{mem.mutex};
@@ -745,6 +747,20 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
         }
     }
 
+    if( debug_logging ) {
+        if( FILE *f = std::fopen("/tmp/nimble_goto_index_log.txt", "a") ) {
+            std::fprintf(f,
+                         "[GoTo] open: cache_key=%s, initial_paths=%zu, has_initial_cache=%d, cache_is_fresh=%d, "
+                         "cached_saved_at=%lld\n",
+                         cache_key.c_str(),
+                         index_state->paths.size(),
+                         has_initial_cache ? 1 : 0,
+                         cache_is_fresh ? 1 : 0,
+                         static_cast<long long>(cached_saved_at));
+            std::fclose(f);
+        }
+    }
+
     __weak GoToPaletteWindowController *wc_weak = wc;
     const std::time_t now = std::time(nullptr);
     const bool refresh_due = !cache_is_fresh || cached_saved_at == 0 || (now - cached_saved_at) >= 60;
@@ -759,8 +775,10 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
                              exclude_globs,
                              has_initial_cache,
                              cache_key,
-                             cache_file_path] {
+                             cache_file_path,
+                             debug_logging] {
             try {
+                const auto t_global_start = std::chrono::steady_clock::now();
                 IndexCrawlerState crawler;
                 crawler.home_root = NormalizePath(*home_root_copy);
                 crawler.index_library = index_library;
@@ -823,18 +841,23 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
 
                 bool done = false;
                 const int quick_budget = std::min(g_IndexQuickPassMs, g_IndexTimeLimitMs);
+                const auto t_quick_start = std::chrono::steady_clock::now();
                 auto quick = BuildFolderIndexPass(crawler, quick_budget, g_IndexMaxNodesPerTick, done);
+                const auto t_quick_end = std::chrono::steady_clock::now();
                 rebuilt_paths.insert(rebuilt_paths.end(), quick.begin(), quick.end());
                 publish_delta(quick);
 
                 int remaining_budget = g_IndexTimeLimitMs - quick_budget;
+                int ticks = 0;
                 while( !done && remaining_budget > 0 ) {
                     const int tick_budget = std::min(g_IndexBackgroundTickMs, remaining_budget);
                     auto batch = BuildFolderIndexPass(crawler, tick_budget, g_IndexMaxNodesPerTick, done);
                     rebuilt_paths.insert(rebuilt_paths.end(), batch.begin(), batch.end());
                     publish_delta(batch);
                     remaining_budget -= tick_budget;
+                    ++ticks;
                 }
+                const auto t_global_end = std::chrono::steady_clock::now();
 
                 {
                     const auto lock = std::lock_guard{index_state->mutex};
@@ -857,6 +880,25 @@ void ShowGoToPalette::Perform(MainWindowFilePanelState *_target, id /*_sender*/)
                 mem.key = cache.key;
                 mem.saved_at = cache.saved_at;
                 mem.paths = cache.paths;
+
+                if( debug_logging ) {
+                    const auto quick_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(t_quick_end - t_quick_start).count();
+                    const auto total_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(t_global_end - t_global_start).count();
+                    if( FILE *f = std::fopen("/tmp/nimble_goto_index_log.txt", "a") ) {
+                        std::fprintf(f,
+                                     "[GoTo] rebuild: cache_key=%s, total_paths=%zu, quick_ms=%lld, total_ms=%lld, "
+                                     "ticks=%d, truncated=%d\n",
+                                     cache_key.c_str(),
+                                     rebuilt_paths.size(),
+                                     static_cast<long long>(quick_ms),
+                                     static_cast<long long>(total_ms),
+                                     ticks,
+                                     rebuilt_paths.size() > g_IndexMaxPaths ? 1 : 0);
+                        std::fclose(f);
+                    }
+                }
             } catch( ... ) {
             }
             dispatch_to_main_queue([wc_weak] { [wc_weak refilterCurrentQuery]; });
