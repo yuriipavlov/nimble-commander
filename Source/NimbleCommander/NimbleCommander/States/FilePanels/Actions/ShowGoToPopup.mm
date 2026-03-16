@@ -161,7 +161,7 @@ static GoToPopupListActionMediator *g_CurrentMediator = nil;
 
 - (void)handleTag:(const nc::utility::Tags::Tag &)_tag
 {
-    // Path-based go-to (e.g. from palette extra search) runs on panel's loading queue
+    // Query items by Finder tag on the panel's background loading queue
     auto task = [tag = _tag, fetch_flags = m_Panel.vfsFetchingFlags, panel = m_Panel](
                     const std::function<bool()> &_is_cancelled) {
         auto items = nc::utility::Tags::GatherAllItemsWithTag(tag.Label());
