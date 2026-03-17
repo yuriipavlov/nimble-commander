@@ -6,6 +6,7 @@
 #import <NimbleCommander/Core/AnyHolder.h>
 #import "../Actions/ShowGoToPopup.h"
 #import <Panel/NetworkConnectionsManager.h>
+#include <NimbleCommander/Bootstrap/Config.h>
 #include <algorithm>
 #include <string>
 
@@ -14,7 +15,14 @@ static const CGFloat g_SearchHeight = 28.;
 static const CGFloat g_TableRowHeight = 22.;
 static const CGFloat g_MaxVisibleRows = 14.;
 static const CGFloat g_Padding = 8.;
-static const NSTimeInterval g_SearchDebounceDelay = 0.08;
+static const auto g_ConfigSearchDebounceMs = "filePanel.gotoPalette.searchDebounceMs";
+
+static NSTimeInterval SearchDebounceDelay()
+{
+    const int ms = GlobalConfig().Has(g_ConfigSearchDebounceMs) ? GlobalConfig().GetInt(g_ConfigSearchDebounceMs) : 80;
+    const int clamped = std::max(0, std::min(1000, ms));
+    return static_cast<NSTimeInterval>(clamped) / 1000.0;
+}
 
 @implementation GoToPaletteEntry
 @synthesize displayString;
@@ -250,7 +258,7 @@ static NSAttributedString *AttributedStringWithHighlightedQuery(NSString *text, 
 {
     [self.searchDebounceTimer invalidate];
     __weak __typeof__(self) wself = self;
-    self.searchDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:g_SearchDebounceDelay
+    self.searchDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:SearchDebounceDelay()
                                                                 repeats:NO
                                                                   block:^(__unused NSTimer *) {
                                                                       if( !wself )

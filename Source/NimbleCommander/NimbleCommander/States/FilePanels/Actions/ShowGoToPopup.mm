@@ -31,6 +31,7 @@
 #include <Base/dispatch_cpp.h>
 #include <fmt/printf.h>
 #include <pstld/pstld.h>
+#include <NimbleCommander/Bootstrap/Config.h>
 
 #include <algorithm>
 #include <deque>
@@ -44,7 +45,7 @@ static const auto g_ConfigShowOthersKey = "filePanel.general.appendOtherWindowsP
 static const auto g_IconSize = NSMakeSize(16, 16);
 static const auto g_TextAttributes = @{NSFontAttributeName: [NSFont menuFontOfSize:13]};
 static const auto g_MaxTextWidth = 600;
-static const std::size_t g_RecentGoToPathsLimit = 48;
+static const auto g_ConfigRecentGoToPathsLimit = "filePanel.gotoPalette.recentPathsLimit";
 
 namespace {
 [[clang::no_destroy]] static std::mutex g_RecentGoToPathsMutex;
@@ -59,7 +60,10 @@ void RememberRecentGoToPath(const std::string &_path)
     if( it != g_RecentGoToPaths.end() )
         g_RecentGoToPaths.erase(it);
     g_RecentGoToPaths.push_front(_path);
-    if( g_RecentGoToPaths.size() > g_RecentGoToPathsLimit )
+    const int lim = GlobalConfig().Has(g_ConfigRecentGoToPathsLimit) ? GlobalConfig().GetInt(g_ConfigRecentGoToPathsLimit)
+                                                                     : 48;
+    const std::size_t limit = lim > 0 ? static_cast<std::size_t>(lim) : 0;
+    while( g_RecentGoToPaths.size() > limit )
         g_RecentGoToPaths.pop_back();
 }
 } // namespace

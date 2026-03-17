@@ -270,9 +270,54 @@
 
             /**
              * Enable verbose debug logging for Go To palette indexer.
-             * When true, writes timing and cache stats into /tmp/nimble_goto_index_log.txt.
+             * When true, writes timing and cache stats into Application Support/Nimble Commander/Logs/nimble-goto-palette-index.log.
              */
-            "debugLogging": false
+            "debugLogging": false,
+
+            /**
+             * Index build budgets (milliseconds).
+             * quickPassMs is a time-to-first-result budget; totalMs is the maximum background build budget.
+             */
+            "indexBuildQuickPassMs": 400,
+            "indexBuildTickMs": 1000,
+            "indexBuildTotalMs": 8000,
+
+            /**
+             * Minimum time between background rebuilds even if the cache is stale (seconds).
+             * Helps to avoid rebuild storms when the palette is opened frequently.
+             */
+            "indexRebuildMinIntervalSeconds": 60,
+
+            /**
+             * Cache freshness (seconds). If the on-disk/in-memory cache is younger than this TTL, it is used as-is.
+             */
+            "indexCacheTTLSeconds": 900,
+
+            /**
+             * Hard limits to keep indexing overhead bounded.
+             */
+            "indexMaxPaths": 20000,
+            "indexMaxNodesPerPass": 4096,
+
+            /**
+             * Low-priority system roots traversal limits.
+             */
+            "systemRootsMaxDepth": 5,
+
+            /**
+             * Add only first-level children for certain system roots (/, /Applications, /System, ...).
+             */
+            "defaultFirstLevelChildrenLimit": 96,
+
+            /**
+             * Debounce search input (milliseconds).
+             */
+            "searchDebounceMs": 80,
+
+            /**
+             * How many most-recent native paths selected via Go To actions to remember.
+             */
+            "recentPathsLimit": 48
         },
 
         /**
