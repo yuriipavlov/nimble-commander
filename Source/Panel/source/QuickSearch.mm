@@ -15,6 +15,7 @@ using namespace std::literals;
 namespace nc::panel::QuickSearch {
 
 static const std::chrono::nanoseconds g_SoftFilteringTimeout = std::chrono::seconds{4};
+static const std::chrono::nanoseconds g_BackspaceAfterDiscardGuard = std::chrono::milliseconds{250};
 
 static KeyModif KeyModifFromInt(int _k);
 static bool IsQuickSearchModifier(NSUInteger _modif, KeyModif _mode);
@@ -36,6 +37,7 @@ static NSString *ModifyStringByKeyDownString(NSString *_str, NSString *_key);
     bool m_ShowTyping;
     int m_SoftFilteringOffset;
     std::chrono::nanoseconds m_SoftFilteringLastAction;
+    std::chrono::nanoseconds m_LastDiscardByBackspace;
     KeyModif m_Modifier;
     data::TextualFilter::Where m_WhereToSearch;
     nc::config::Config *m_Config;
@@ -53,6 +55,7 @@ static NSString *ModifyStringByKeyDownString(NSString *_str, NSString *_key);
     m_Delegate = _delegate;
     m_Data = &_data;
     m_Config = &_config;
+    m_LastDiscardByBackspace = 0ns;
 
     // wire up config changing notifications
     auto wire = [&](std::string_view _path) {
@@ -143,6 +146,10 @@ static NSString *ModifyStringByKeyDownString(NSString *_str, NSString *_key);
     if( IsQuickSearchStringCharacter(character) )
         return view::BiddingPriority::Default;
 
+    // Briefly keep stray Backspace after discard (e.g. layout switchers) from reaching panel shortcuts.
+    if( IsBackspace(character) && m_LastDiscardByBackspace + g_BackspaceAfterDiscardGuard >= nc::base::machtime() )
+        return view::BiddingPriority::Max;
+
     bool empty_now =
         m_IsSoftFiltering ? m_Data->SoftFiltering().text.length == 0 : m_Data->HardFiltering().text.text.length == 0;
 
@@ -181,6 +188,8 @@ static NSString *ModifyStringByKeyDownString(NSString *_str, NSString *_key);
     const auto replace = ModifyStringByKeyDownString(current, key);
 
     if( replace == nil || replace.length == 0 ) {
+        if( IsBackspace(key) && current.length > 0 )
+            m_LastDiscardByBackspace = nc::base::machtime();
         [self discardFiltering];
         return;
     }
@@ -213,6 +222,8 @@ static NSString *ModifyStringByKeyDownString(NSString *_str, NSString *_key);
     const auto replace = ModifyStringByKeyDownString(current, key);
 
     if( replace == nil || replace.length == 0 ) {
+        if( IsBackspace(key) && current.length > 0 )
+            m_LastDiscardByBackspace = nc::base::machtime();
         [self discardFiltering];
         return;
     }
