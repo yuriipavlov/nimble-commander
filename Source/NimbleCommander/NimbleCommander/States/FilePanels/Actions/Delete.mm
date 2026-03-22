@@ -134,6 +134,8 @@ void context::DeletePermanently::Perform(PanelController *_target, id /*_sender*
 
 static bool CommonDeletePredicate(PanelController *_target)
 {
+    if( _target.view.hasActiveFieldEditor )
+        return false;
     auto i = _target.view.item;
     if( !i || !i.Host()->IsWritable() )
         return false;

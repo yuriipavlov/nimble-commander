@@ -95,6 +95,7 @@ struct PresentationFactory {
 
 - (void)startFieldEditorRenaming;
 - (void)discardFieldEditor;
+@property(nonatomic, readonly) BOOL hasActiveFieldEditor;
 
 // Encodes a layout of the currently active presentation mode as PanelViewLayout's variant
 - (nc::panel::PanelViewLayout::LayoutVariant)presentationLayout;
