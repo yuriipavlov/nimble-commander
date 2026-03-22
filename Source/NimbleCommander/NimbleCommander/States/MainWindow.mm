@@ -9,10 +9,30 @@
 
 static const auto g_Identifier = @"MainWindow";
 static const auto g_FrameIdentifier = @"MainWindow";
-static const auto g_MinWindowSize = NSMakeSize(640, 481);
 // ^^^^ this additional pixel (481 instead of 480) appeared to have an even amount of rows
 // for the Brief presentation with a default row height (i.e. 19 px)
+static const auto g_MinWindowSize = NSMakeSize(640, 481);
 static const auto g_InitialWindowContentRect = NSMakeRect(100, 100, 1000, 600);
+
+/// True when the key window should let AppKit / the text system handle the key (not our alternate menu shortcuts).
+static bool NCKeyWindowFirstResponderIsTextEditing(NSWindow *_Nonnull window)
+{
+    NSResponder *const fr = window.firstResponder;
+    if( fr == nil )
+        return false;
+    if( [fr isKindOfClass:[NSTextView class]] || [fr isKindOfClass:[NSTextField class]] )
+        return true;
+    // In-place rename / new file: NCPanelViewFieldEditor is an NSScrollView; `-editor` is the NSTextView.
+    const SEL editor_sel = NSSelectorFromString(@"editor");
+    if( [fr isKindOfClass:[NSScrollView class]] && [fr respondsToSelector:editor_sel] ) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        id const ed = [fr performSelector:editor_sel];
+#pragma clang diagnostic pop
+        return [ed isKindOfClass:[NSTextView class]];
+    }
+    return false;
+}
 
 @implementation NCMainWindow {
     nc::utility::ActionsShortcutsManager *m_ActionsShortcutsManager;
@@ -128,6 +148,9 @@ static const auto g_CloseWindowTitle = NSLocalizedString(@"Close Window", "Menu 
 {
     using AS = nc::utility::ActionShortcut;
     using ASM = nc::utility::ActionsShortcutsManager;
+
+    if( NCKeyWindowFirstResponderIsTextEditing(self) )
+        return [super performKeyEquivalent:_event];
 
     // Build a shortcut out of the keyboard event and check if it's not empty
     if( const AS event_shortcut = AS(AS::EventData(_event)) ) {

@@ -984,6 +984,11 @@ struct StateStorage {
     }
 }
 
+- (BOOL)hasActiveFieldEditor
+{
+    return m_RenamingEditor != nil;
+}
+
 // Search the current data for an item which has the same name, the same directory and the same VFS as the queried item
 - (int)findSortedIndexOfForeignListingItem:(const VFSListingItem &)_item
 {
