@@ -1,0 +1,155 @@
+// Copyright (C) 2016-2026 Michael Kazakov. Subject to GNU General Public License version 3.
+#import "NCPanelPathBarView.h"
+#import "NCPanelBreadcrumbsView.h"
+#include <Utility/ObjCpp.h>
+
+/// Aligns a text container vertically inside a strip by centering on the used-rect height, clamped when text is taller.
+static CGFloat NCPanelPathBarContainerOriginYForLine(CGFloat stripH, CGFloat usedH, CGFloat usedOriginY) noexcept
+{
+    if( usedH <= 0. )
+        return 0.;
+    CGFloat y = (stripH - usedH) * 0.5 - usedOriginY;
+    if( usedH > stripH ) {
+        const CGFloat lo = stripH - usedH - usedOriginY;
+        const CGFloat hi = -usedOriginY;
+        if( y < lo )
+            y = lo;
+        else if( y > hi )
+            y = hi;
+    }
+    return y;
+}
+
+@implementation NCPanelPathBarView {
+    NCPanelBreadcrumbsView *m_Breadcrumbs;
+    NSTextField *m_PathField;
+    NSLayoutConstraint *m_PathFieldCenterY;
+}
+
+@synthesize breadcrumbsView = m_Breadcrumbs;
+@synthesize pathEditField = m_PathField;
+@synthesize fullPathEditActive = _fullPathEditActive;
+@synthesize onCancelFullPathEdit = _onCancelFullPathEdit;
+
+- (instancetype)initWithFrame:(NSRect)frameRect
+{
+    self = [super initWithFrame:frameRect];
+    if( self ) {
+        self.clipsToBounds = YES;
+        m_Breadcrumbs = [[NCPanelBreadcrumbsView alloc] initWithFrame:NSZeroRect];
+        m_Breadcrumbs.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:m_Breadcrumbs];
+
+        m_PathField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+        m_PathField.translatesAutoresizingMaskIntoConstraints = NO;
+        m_PathField.bezeled = NO;
+        m_PathField.bordered = NO;
+        m_PathField.drawsBackground = NO;
+        m_PathField.focusRingType = NSFocusRingTypeNone;
+        // Read-only: full-path mode is for selecting and copying the path. Enter and Escape both dismiss it.
+        m_PathField.editable = NO;
+        m_PathField.selectable = YES;
+        m_PathField.alignment = NSTextAlignmentCenter;
+        m_PathField.lineBreakMode = NSLineBreakByTruncatingHead;
+        m_PathField.maximumNumberOfLines = 1;
+        m_PathField.hidden = YES;
+        m_PathField.delegate = self;
+        [self addSubview:m_PathField];
+
+        self.fullPathEditActive = NO;
+
+        m_PathFieldCenterY = [m_PathField.centerYAnchor constraintEqualToAnchor:self.centerYAnchor];
+        [NSLayoutConstraint activateConstraints:@[
+            [m_Breadcrumbs.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [m_Breadcrumbs.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [m_Breadcrumbs.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [m_Breadcrumbs.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            m_PathFieldCenterY,
+            [m_PathField.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
+            [m_PathField.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
+        ]];
+    }
+    return self;
+}
+
+- (void)syncPathEditFieldVerticalAlignmentWithFont:(NSFont *)font
+{
+    NSFont *const f = font ?: [NSFont systemFontOfSize:13.];
+    NSLayoutManager *const lm = [[NSLayoutManager alloc] init];
+    const CGFloat lineH = [lm defaultLineHeightForFont:f];
+    const CGFloat stripH = NSHeight(self.bounds);
+    if( stripH < 2. ) {
+        m_PathFieldCenterY.constant = 0.;
+        return;
+    }
+    const CGFloat geometric = (stripH - lineH) * 0.5;
+    const CGFloat y = NCPanelPathBarContainerOriginYForLine(stripH, lineH, 0.);
+    m_PathFieldCenterY.constant = y - geometric;
+}
+
+- (void)layout
+{
+    [super layout];
+    if( self.fullPathEditActive && m_PathField.font != nil )
+        [self syncPathEditFieldVerticalAlignmentWithFont:m_PathField.font];
+}
+
+- (void)enterFullPathEditWithString:(NSString *)path font:(NSFont *)font textColor:(NSColor *)textColor
+{
+    m_PathField.font = font;
+    m_PathField.textColor = textColor;
+    m_PathField.stringValue = path ?: @"";
+    [self syncPathEditFieldVerticalAlignmentWithFont:font];
+    m_Breadcrumbs.hidden = YES;
+    m_PathField.hidden = NO;
+    self.fullPathEditActive = YES;
+    [self.window makeFirstResponder:m_PathField];
+    [m_PathField selectText:nil];
+    if( textColor != nil && textColor.type == NSColorTypeComponentBased ) {
+        NSColor *const rgb = [textColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        if( rgb != nil ) {
+            CGFloat r = 0., g = 0., b = 0., a = 0.;
+            [rgb getRed:&r green:&g blue:&b alpha:&a];
+            const CGFloat luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+            if( luminance > 0.85 ) {
+                if( NSTextView *const tv = nc::objc_cast<NSTextView>(m_PathField.currentEditor) ) {
+                    tv.selectedTextAttributes = @{
+                        NSBackgroundColorAttributeName: NSColor.textBackgroundColor,
+                        NSForegroundColorAttributeName: NSColor.controlTextColor,
+                    };
+                    tv.insertionPointColor = textColor;
+                }
+            }
+        }
+    }
+}
+
+- (void)exitFullPathEdit
+{
+    m_PathFieldCenterY.constant = 0.;
+    m_Breadcrumbs.hidden = NO;
+    m_PathField.hidden = YES;
+    self.fullPathEditActive = NO;
+}
+
+- (BOOL)control:(NSControl *)control
+           textView:(NSTextView *)textView
+    doCommandBySelector:(SEL)commandSelector
+{
+    (void)textView;
+    if( control != m_PathField )
+        return NO;
+    if( commandSelector == @selector(cancelOperation:) ) {
+        if( self.onCancelFullPathEdit )
+            self.onCancelFullPathEdit();
+        return YES;
+    }
+    if( commandSelector == @selector(insertNewline:) ) {
+        if( self.onCancelFullPathEdit )
+            self.onCancelFullPathEdit();
+        return YES;
+    }
+    return NO;
+}
+
+@end
