@@ -1,3 +1,5 @@
+> **Nimble Commander is alive!** This is an actively maintained community fork: the original author can no longer work on the project and [welcomed forks](https://github.com/mikekazakov/nimble-commander/discussions/756), and we are not going to let such a wonderful file manager be abandoned. We plan to keep developing it, grow a friendly community around it (with a Slack or Discord channel) and welcome any kind of participation: code, bug reports, ideas, testing, translations, docs or just spreading the word. There are no signed builds yet, so for now please build the app yourself (see [Docs/Building.md](Docs/Building.md)); more in [FORK.md](FORK.md). The badges, download links and website below belong to the original project.
+
 [![Build and Test](https://github.com/mikekazakov/nimble-commander/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/mikekazakov/nimble-commander/actions/workflows/build.yml)
 [![Nightly Build](https://github.com/mikekazakov/nimble-commander/actions/workflows/nightly.yml/badge.svg?branch=main)](https://github.com/mikekazakov/nimble-commander/actions/workflows/nightly.yml)
 
