@@ -2,6 +2,7 @@
 #include "Pasteboard.h"
 #include <VFS/VFS.h>
 #include <Utility/StringExtras.h>
+#include <Panel/Log.h>
 
 namespace nc::panel {
 
@@ -45,6 +46,28 @@ bool PasteboardSupport::WriteURLSPBoard(const std::vector<VFSListingItem> &_item
     [_pasteboard declareTypes:@[(__bridge NSString *)kUTTypeFileURL] owner:nil];
 #pragma clang diagnostic pop
     return [_pasteboard writeObjects:urls];
+}
+
+void PasteboardSupport::CoordinateReading(NSArray<NSURL *> *_urls, std::function<void()> _then)
+{
+    if( _urls.count == 0 ) {
+        _then();
+        return;
+    }
+
+    NSMutableArray<NSFileAccessIntent *> *const intents = [[NSMutableArray alloc] initWithCapacity:_urls.count];
+    for( NSURL *url in _urls )
+        [intents addObject:[NSFileAccessIntent readingIntentWithURL:url options:0]];
+
+    NSFileCoordinator *const coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    [coordinator coordinateAccessWithIntents:intents
+                                       queue:NSOperationQueue.mainQueue
+                                  byAccessor:^(NSError *_error) {
+                                    (void)coordinator; // keep it alive until the access is granted
+                                    if( _error )
+                                        Log::Warn("Coordinated reading failed: {}", _error.description.UTF8String);
+                                    _then();
+                                  }];
 }
 
 } // namespace nc::panel

@@ -1,4 +1,4 @@
-// Copyright (C) 2017-2025 Michael Kazakov. Subject to GNU General Public License version 3.
+// Copyright (C) 2017-2026 Michael Kazakov. Subject to GNU General Public License version 3.
 #include "DragReceiver.h"
 #include "FilesDraggingSource.h"
 #include "PanelController.h"
@@ -11,6 +11,7 @@
 #include <Utility/StringExtras.h>
 #include <Utility/URLSecurityScopedResourceGuard.h>
 #include "PanelAux.h"
+#include "Helpers/Pasteboard.h"
 #include <Operations/Linkage.h>
 #include <Operations/Copying.h>
 #include <NimbleCommander/Core/Alert.h>
@@ -39,6 +40,12 @@ static std::expected<std::vector<VFSListingItem>, Error> FetchListingItems(NSArr
 
 static void AddPanelRefreshIfNecessary(PanelController *_target, ops::Operation &_operation);
 static void AddPanelRefreshIfNecessary(PanelController *_target, PanelController *_source, ops::Operation &_operation);
+static void PerformURLsOperation(PanelController *_target,
+                                 NSDragOperation _operation,
+                                 NSArray<NSURL *> *_source,
+                                 const vfs::VFSPath &_destination,
+                                 vfs::NativeHost &_native_host,
+                                 const std::shared_ptr<utility::URLSecurityScopedResourceGuard> &_urls_access_guard);
 
 DragReceiver::DragReceiver(PanelController *_target,
                            id<NSDraggingInfo> _dragging,
@@ -321,61 +328,22 @@ bool DragReceiver::PerformWithURLsSource(NSArray<NSURL *> *_source, const vfs::V
     if( !_source || _source.count == 0 )
         return false;
 
+    const auto operation = BuildOperationForURLs(_source, _destination);
+    if( operation != NSDragOperationCopy && operation != NSDragOperationMove && operation != NSDragOperationLink )
+        return false;
+
     // start accessing the security scoped resources identified by the urls if any there are any.
     // this guard must be kept alive until operations finish, hence it's attached to observers.
     const auto urls_access_guard = std::make_shared<utility::URLSecurityScopedResourceGuard>(_source);
 
-    const auto operation = BuildOperationForURLs(_source, _destination);
-
-    // currently fetching listings synchronously in main thread, which is BAAAD
-    auto source_items = FetchListingItems(_source, m_NativeHost);
-
-    if( !source_items.has_value() ) {
-        // failed to fetch the source items.
-        // refuse the drag and show an error message asynchronously.
-        const Error &error = source_items.error();
-        dispatch_to_main_queue([error] {
-            Alert *const alert = [[Alert alloc] init];
-            alert.messageText = NSLocalizedString(@"Failed to access the dragged item:",
-                                                  "Showing error when failed to access the dragged items");
-            alert.informativeText = [NSString stringWithUTF8StdString:error.LocalizedFailureReason()];
-            [alert addButtonWithTitle:NSLocalizedString(@"OK", "")];
-            [alert runModal];
-        });
-        return false;
-    }
-
-    if( operation == NSDragOperationCopy ) {
-        const auto opts = MakeDefaultFileCopyOptions();
-        const auto op = std::make_shared<nc::ops::Copying>(
-            std::move(*source_items), _destination.Path(), _destination.Host(), opts);
-        op->Observe(ops::Operation::NotifyAboutFinish, [urls_access_guard] {});
-        AddPanelRefreshIfNecessary(m_Target, *op);
-        [m_Target.mainWindowController enqueueOperation:op];
-        return true;
-    }
-    if( operation == NSDragOperationMove ) {
-        const auto opts = MakeDefaultFileMoveOptions();
-        const auto op = std::make_shared<nc::ops::Copying>(
-            std::move(*source_items), _destination.Path(), _destination.Host(), opts);
-        op->Observe(ops::Operation::NotifyAboutFinish, [urls_access_guard] {});
-        AddPanelRefreshIfNecessary(m_Target, *op);
-        [m_Target.mainWindowController enqueueOperation:op];
-        return true;
-    }
-    if( operation == NSDragOperationLink ) {
-        for( const auto &file : *source_items ) {
-            const auto source_path = file.Path();
-            const auto dest_path = std::filesystem::path(_destination.Path()) / file.Filename();
-            const auto op = std::make_shared<nc::ops::Linkage>(
-                dest_path.native(), source_path, _destination.Host(), nc::ops::LinkageType::CreateSymlink);
-            op->Observe(ops::Operation::NotifyAboutFinish, [urls_access_guard] {});
-            AddPanelRefreshIfNecessary(m_Target, *op);
-            [m_Target.mainWindowController enqueueOperation:op];
-        }
-        return true;
-    }
-    return false;
+    __weak PanelController *const weak_target = m_Target;
+    vfs::NativeHost *const native_host = &m_NativeHost;
+    const vfs::VFSPath destination = _destination;
+    PasteboardSupport::CoordinateReading(_source, [=] {
+        if( PanelController *const target = weak_target )
+            PerformURLsOperation(target, operation, _source, destination, *native_host, urls_access_guard);
+    });
+    return true;
 }
 
 bool DragReceiver::PerformWithURLsPromiseSource(const vfs::VFSPath &_dest)
@@ -510,6 +478,60 @@ static std::expected<std::vector<VFSListingItem>, Error> FetchListingItems(NSArr
             return std::unexpected(listing.error());
     }
     return source_items;
+}
+
+static void PerformURLsOperation(PanelController *_target,
+                                 NSDragOperation _operation,
+                                 NSArray<NSURL *> *_source,
+                                 const vfs::VFSPath &_destination,
+                                 vfs::NativeHost &_native_host,
+                                 const std::shared_ptr<utility::URLSecurityScopedResourceGuard> &_urls_access_guard)
+{
+    // currently fetching listings synchronously in main thread, which is BAAAD
+    auto source_items = FetchListingItems(_source, _native_host);
+
+    if( !source_items.has_value() ) {
+        // failed to fetch the source items.
+        // show an error message asynchronously.
+        const Error &error = source_items.error();
+        dispatch_to_main_queue([error] {
+            Alert *const alert = [[Alert alloc] init];
+            alert.messageText = NSLocalizedString(@"Failed to access the dragged item:",
+                                                  "Showing error when failed to access the dragged items");
+            alert.informativeText = [NSString stringWithUTF8StdString:error.LocalizedFailureReason()];
+            [alert addButtonWithTitle:NSLocalizedString(@"OK", "")];
+            [alert runModal];
+        });
+        return;
+    }
+
+    if( _operation == NSDragOperationCopy ) {
+        const auto opts = MakeDefaultFileCopyOptions();
+        const auto op = std::make_shared<nc::ops::Copying>(
+            std::move(*source_items), _destination.Path(), _destination.Host(), opts);
+        op->Observe(ops::Operation::NotifyAboutFinish, [_urls_access_guard] {});
+        AddPanelRefreshIfNecessary(_target, *op);
+        [_target.mainWindowController enqueueOperation:op];
+    }
+    else if( _operation == NSDragOperationMove ) {
+        const auto opts = MakeDefaultFileMoveOptions();
+        const auto op = std::make_shared<nc::ops::Copying>(
+            std::move(*source_items), _destination.Path(), _destination.Host(), opts);
+        op->Observe(ops::Operation::NotifyAboutFinish, [_urls_access_guard] {});
+        AddPanelRefreshIfNecessary(_target, *op);
+        [_target.mainWindowController enqueueOperation:op];
+    }
+    else if( _operation == NSDragOperationLink ) {
+        for( const auto &file : *source_items ) {
+            const auto source_path = file.Path();
+            const auto dest_path = std::filesystem::path(_destination.Path()) / file.Filename();
+            const auto op = std::make_shared<nc::ops::Linkage>(
+                dest_path.native(), source_path, _destination.Host(), nc::ops::LinkageType::CreateSymlink);
+            op->Observe(ops::Operation::NotifyAboutFinish, [_urls_access_guard] {});
+            AddPanelRefreshIfNecessary(_target, *op);
+            [_target.mainWindowController enqueueOperation:op];
+        }
+    }
 }
 
 static void AddPanelRefreshIfNecessary(PanelController *_target, ops::Operation &_operation)

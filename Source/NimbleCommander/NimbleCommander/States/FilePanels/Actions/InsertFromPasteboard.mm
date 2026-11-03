@@ -1,10 +1,11 @@
-// Copyright (C) 2017-2025 Michael Kazakov. Subject to GNU General Public License version 3.
+// Copyright (C) 2017-2026 Michael Kazakov. Subject to GNU General Public License version 3.
 #include <VFS/Native.h>
 #include <Utility/PathManip.h>
 #include "../PanelController.h"
 #include "../PanelAux.h"
 #include "../MainWindowFilePanelState.h"
 #include "InsertFromPasteboard.h"
+#include "../Helpers/Pasteboard.h"
 #include <Operations/Copying.h>
 #include "../../MainWindowController.h"
 #include <Utility/ObjCpp.h>
@@ -15,14 +16,12 @@ namespace nc::panel::actions {
 // perhaps it would be good to add support of URLS at least.
 // or even with custom NC's structures used in drag&drop system
 
-static std::vector<VFSListingItem> FetchVFSListingsItemsFromPaths(NSArray *_input, vfs::NativeHost &_native_host)
+static std::vector<VFSListingItem> FetchVFSListingsItemsFromURLs(NSArray<NSURL *> *_input,
+                                                                 vfs::NativeHost &_native_host)
 {
     std::vector<VFSListingItem> result;
-    for( NSString *ns_filepath in _input ) {
-        if( !objc_cast<NSString>(ns_filepath) )
-            continue; // guard against malformed input
-
-        if( const char *filepath = ns_filepath.fileSystemRepresentation ) {
+    for( NSURL *url in _input ) {
+        if( const char *filepath = url.fileSystemRepresentation ) {
             if( const std::expected<VFSListingPtr, Error> listing = _native_host.FetchSingleItemListing(filepath, 0) )
                 result.emplace_back((*listing)->Item(0));
         }
@@ -30,23 +29,25 @@ static std::vector<VFSListingItem> FetchVFSListingsItemsFromPaths(NSArray *_inpu
     return result;
 }
 
-static std::vector<VFSListingItem> FetchVFSListingsItemsFromPasteboard(vfs::NativeHost &_native_host)
+static NSArray<NSURL *> *FetchURLsFromPasteboard()
 {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
     // check what's inside pasteboard
     NSPasteboard *const pasteboard = NSPasteboard.generalPasteboard;
+    NSMutableArray<NSURL *> *const result = [[NSMutableArray alloc] init];
     if( [pasteboard availableTypeFromArray:@[NSFilenamesPboardType]] ) {
         // input should be an array of filepaths as NSStrings
         const auto filepaths = objc_cast<NSArray>([pasteboard propertyListForType:NSFilenamesPboardType]);
-
-        // currently fetching listings synchronously, which is BAAAD
-        // (but we're on native vfs, at least for now)
-        return FetchVFSListingsItemsFromPaths(filepaths, _native_host);
+        for( NSString *ns_filepath in filepaths ) {
+            if( !objc_cast<NSString>(ns_filepath) )
+                continue; // guard against malformed input
+            [result addObject:[NSURL fileURLWithPath:ns_filepath]];
+        }
     }
     // TODO: reading from URL pasteboard?
-    return {};
+    return result;
 
 #pragma clang diagnostic pop
 }
@@ -57,23 +58,36 @@ static void PasteOrMove(PanelController *_target, bool _paste, vfs::NativeHost &
     if( !_target.isUniform || !_target.vfs->IsWritable() )
         return;
 
-    auto source_items = FetchVFSListingsItemsFromPasteboard(_native_host);
+    NSArray<NSURL *> *const urls = FetchURLsFromPasteboard();
+    if( urls.count == 0 )
+        return;
 
-    if( source_items.empty() )
-        return; // errors on fetching listings?
-
-    auto opts = MakeDefaultFileCopyOptions();
-    opts.docopy = _paste;
+    const VFSHostPtr dest_vfs = _target.vfs;
+    const std::string dest_path = _target.currentDirectoryPath;
+    vfs::NativeHost *const native_host = &_native_host;
     __weak PanelController *wpc = _target;
-    const auto op =
-        std::make_shared<nc::ops::Copying>(std::move(source_items), _target.currentDirectoryPath, _target.vfs, opts);
-    op->ObserveUnticketed(nc::ops::Operation::NotifyAboutFinish, [=] {
-        dispatch_to_main_queue([=] {
-            if( PanelController *const pc = wpc )
-                [pc refreshPanel];
+    PasteboardSupport::CoordinateReading(urls, [=] {
+        PanelController *const target = wpc;
+        if( !target )
+            return;
+
+        // currently fetching listings synchronously, which is BAAAD
+        // (but we're on native vfs, at least for now)
+        auto source_items = FetchVFSListingsItemsFromURLs(urls, *native_host);
+        if( source_items.empty() )
+            return; // errors on fetching listings?
+
+        auto opts = MakeDefaultFileCopyOptions();
+        opts.docopy = _paste;
+        const auto op = std::make_shared<nc::ops::Copying>(std::move(source_items), dest_path, dest_vfs, opts);
+        op->ObserveUnticketed(nc::ops::Operation::NotifyAboutFinish, [=] {
+            dispatch_to_main_queue([=] {
+                if( PanelController *const pc = wpc )
+                    [pc refreshPanel];
+            });
         });
+        [target.mainWindowController enqueueOperation:op];
     });
-    [_target.mainWindowController enqueueOperation:op];
 }
 
 PasteFromPasteboard::PasteFromPasteboard(nc::vfs::NativeHost &_native_host) : m_NativeHost(_native_host)
